@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install:*)",
+      "Bash(pnpm --filter @carrousel/web typecheck)",
+      "Bash(pnpm --filter @carrousel/web build)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(pnpm --filter @carrousel/web add zustand zundo idb-keyval nanoid colorthief zod)",
+      "Bash(pnpm --filter @carrousel/web add -D @types/colorthief)",
+      "Bash(netstat -ano)",
+      "Bash(tasklist //FI \"PID eq 13628\")",
+      "Bash(taskkill //PID 13628 //F)",
+      "Bash(pnpm --filter @carrousel/web add '@carrousel/shared@workspace:*')"
+    ]
+  }
+}

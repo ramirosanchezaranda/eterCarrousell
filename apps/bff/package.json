@@ -1,0 +1,12 @@
+{
+  "name": "@carrousel/bff",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "BFF para proxificar la API de Claude y ocultar la API key",
+  "scripts": {
+    "dev": "echo 'BFF stub — se implementa en el hito 6 del plan' && exit 0",
+    "build": "echo 'BFF stub — se implementa en el hito 6 del plan' && exit 0",
+    "typecheck": "echo 'BFF stub — pendiente' && exit 0"
+  }
+}
