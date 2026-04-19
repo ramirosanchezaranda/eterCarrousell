@@ -20,6 +20,8 @@ export interface UiState {
   showBoundingBoxes: boolean;
   gridVisible: boolean;
   zoom: number;
+  panX: number;
+  panY: number;
   loading: boolean;
   downloading: boolean;
   error: string | null;
@@ -42,6 +44,7 @@ export interface UiActions {
   toggleGuide: (id: GuideId) => void;
   setSnapEnabled: (v: boolean) => void;
   setZoom: (z: number) => void;
+  setPan: (x: number, y: number) => void;
   setLoading: (v: boolean) => void;
   setDownloading: (v: boolean) => void;
   setError: (e: string | null) => void;
@@ -64,6 +67,8 @@ export const useUiStore = create<UiState & UiActions>((set, get) => ({
   showBoundingBoxes: true,
   gridVisible: false,
   zoom: 1,
+  panX: 0,
+  panY: 0,
   loading: false,
   downloading: false,
   error: null,
@@ -85,6 +90,7 @@ export const useUiStore = create<UiState & UiActions>((set, get) => ({
   })),
   setSnapEnabled: (snapEnabled) => set({ snapEnabled }),
   setZoom: (zoom) => set({ zoom }),
+  setPan: (panX, panY) => set({ panX, panY }),
   setLoading: (loading) => set({ loading }),
   setDownloading: (downloading) => set({ downloading }),
   setError: (error) => set({ error }),
