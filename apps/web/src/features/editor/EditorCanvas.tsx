@@ -6,8 +6,10 @@
  *  • Ctrl+V / drop de archivo / drop desde galería → agrega imagen al slide.
  *  • Render del background del slide (solid / gradient / image) o bg del theme.
  *  • Motor de auto-fix opcional al soltar drag.
+ *  • Zoom con Ctrl+scroll / pinch (2 dedos). Pan con scroll / spacebar+drag.
+ *    El zoom es puramente visual (CSS transform) — no toca coordenadas del store.
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpCircle, ArrowDownCircle, Copy, Clipboard as ClipboardIcon, Lock, Unlock, Scissors } from 'lucide-react';
 import type { PositionedBlock, Rect, SlideBackground, SlideFormat } from '@/domain';
@@ -24,6 +26,9 @@ import { PathNodeEditor } from './PathNodeEditor';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { InlineTextEditor } from './InlineTextEditor';
 
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 4;
+
 interface DragState {
   blockId: string;
   mode: 'move' | 'resize' | 'rotate';
@@ -39,6 +44,7 @@ interface DragState {
 export function EditorCanvas() {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const zoomWrapperRef = useRef<HTMLDivElement | null>(null);
   const projectStore = useProjectStore();
   const ui = useUiStore();
   const assets = useAssetsStore();
@@ -49,6 +55,24 @@ export function EditorCanvas() {
   const [menu, setMenu] = useState<{ x: number; y: number; blockId?: string } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [canvasWidthPx, setCanvasWidthPx] = useState(560);
+  const [isSpacePan, setIsSpacePan] = useState(false);
+
+  // Stable refs — kept in sync each render, consumed by effect closures
+  // without needing to re-register listeners on every zoom/pan change.
+  const zoomRef = useRef(ui.zoom);
+  const panXRef = useRef(ui.panX);
+  const panYRef = useRef(ui.panY);
+  zoomRef.current = ui.zoom;
+  panXRef.current = ui.panX;
+  panYRef.current = ui.panY;
+
+  // Spacebar pan tracking
+  const spaceDown = useRef(false);
+  const panDragRef = useRef<{ startX: number; startY: number; startPanX: number; startPanY: number } | null>(null);
+
+  // Lets the pinch effect cancel an in-progress block drag when a 2nd pointer lands.
+  const cancelDragRef = useRef<(() => void) | null>(null);
+  cancelDragRef.current = drag ? () => setDrag(null) : null;
 
   const containerStyle = useMemo(() => ({
     maxWidth: 560,
@@ -58,8 +82,128 @@ export function EditorCanvas() {
     overflow: 'hidden',
     background: assets.theme.colors.bg,
     position: 'relative' as const,
-  }), [assets.theme.colors.bg]);
+    cursor: isSpacePan ? 'grab' : undefined,
+  }), [assets.theme.colors.bg, isSpacePan]);
 
+  // ── Wheel: Ctrl/Cmd → zoom centered on cursor, else pan ──────────────────
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      const { setZoom, setPan } = useUiStore.getState();
+      if (e.ctrlKey || e.metaKey) {
+        const currentZoom = zoomRef.current;
+        const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+        const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, currentZoom * factor));
+        const newPanX = cx - (cx - panXRef.current) * (newZoom / currentZoom);
+        const newPanY = cy - (cy - panYRef.current) * (newZoom / currentZoom);
+        setZoom(newZoom);
+        setPan(newPanX, newPanY);
+      } else {
+        setPan(panXRef.current - e.deltaX, panYRef.current - e.deltaY);
+      }
+    };
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, []); // stable: all values accessed through refs or direct store calls
+
+  // ── Pinch zoom via PointerEvent (capture phase, so it fires before SVG) ──
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const pointers = new Map<number, { x: number; y: number }>();
+    let pinchStart: {
+      dist: number; zoom: number; panX: number; panY: number; cx: number; cy: number;
+    } | null = null;
+
+    const onDown = (e: PointerEvent) => {
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 2) {
+        cancelDragRef.current?.(); // cancel any active block drag
+        const pts = Array.from(pointers.values());
+        const p0 = pts[0]!, p1 = pts[1]!;
+        const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        const rect = container.getBoundingClientRect();
+        pinchStart = {
+          dist,
+          zoom: zoomRef.current,
+          panX: panXRef.current,
+          panY: panYRef.current,
+          cx: (p0.x + p1.x) / 2 - rect.left,
+          cy: (p0.y + p1.y) / 2 - rect.top,
+        };
+      }
+    };
+
+    const onMove = (e: PointerEvent) => {
+      if (!pointers.has(e.pointerId)) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size >= 2 && pinchStart) {
+        // Intercept in capture phase — SVG block drag never sees these events.
+        e.stopImmediatePropagation();
+        const pts = Array.from(pointers.values());
+        const p0 = pts[0]!, p1 = pts[1]!;
+        const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        const factor = dist / pinchStart.dist;
+        const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, pinchStart.zoom * factor));
+        const { cx, cy } = pinchStart;
+        const newPanX = cx - (cx - pinchStart.panX) * (newZoom / pinchStart.zoom);
+        const newPanY = cy - (cy - pinchStart.panY) * (newZoom / pinchStart.zoom);
+        const { setZoom, setPan } = useUiStore.getState();
+        setZoom(newZoom);
+        setPan(newPanX, newPanY);
+      }
+    };
+
+    const onUp = (e: PointerEvent) => {
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) pinchStart = null;
+    };
+
+    container.addEventListener('pointerdown', onDown, { capture: true });
+    container.addEventListener('pointermove', onMove, { capture: true });
+    container.addEventListener('pointerup', onUp, { capture: true });
+    container.addEventListener('pointercancel', onUp, { capture: true });
+    return () => {
+      container.removeEventListener('pointerdown', onDown, { capture: true });
+      container.removeEventListener('pointermove', onMove, { capture: true });
+      container.removeEventListener('pointerup', onUp, { capture: true });
+      container.removeEventListener('pointercancel', onUp, { capture: true });
+    };
+  }, []);
+
+  // ── Spacebar → pan cursor mode ────────────────────────────────────────────
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || e.repeat) return;
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+      e.preventDefault();
+      spaceDown.current = true;
+      setIsSpacePan(true);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      spaceDown.current = false;
+      setIsSpacePan(false);
+      panDragRef.current = null;
+    };
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
+
+  // ── pointerToCanvas: mapea coordenadas viewport → espacio canvas SVG ──────
+  // getBoundingClientRect devuelve el rect visual post-CSS-transform, por lo
+  // que esta función ya compensa el zoom sin ningún cambio adicional.
   const pointerToCanvas = useCallback((e: { clientX: number; clientY: number }): { x: number; y: number } => {
     const svg = svgRef.current;
     if (!svg) return { x: 0, y: 0 };
@@ -121,12 +265,22 @@ export function EditorCanvas() {
   };
 
   const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
+    // Spacebar+drag pan: el SVG captura el pointer, así que recibimos los
+    // eventos aquí incluso fuera del área original.
+    if (panDragRef.current) {
+      const dx = e.clientX - panDragRef.current.startX;
+      const dy = e.clientY - panDragRef.current.startY;
+      useUiStore.getState().setPan(
+        panDragRef.current.startPanX + dx,
+        panDragRef.current.startPanY + dy,
+      );
+      return;
+    }
     if (!drag || !slide) return;
     const p = pointerToCanvas(e);
     const dx = p.x - drag.startPointer.x;
     const dy = p.y - drag.startPointer.y;
     // Drag local: solo actualiza state del componente. No toca el store.
-    // El render lee `drag.currentRect/currentRotation` para el bloque activo.
     if (drag.mode === 'move') {
       let nx = drag.startRect.x + dx;
       let ny = drag.startRect.y + dy;
@@ -147,6 +301,7 @@ export function EditorCanvas() {
   };
 
   const onPointerUp = () => {
+    if (panDragRef.current) { panDragRef.current = null; return; }
     if (!drag || !slide) { setDrag(null); return; }
     // Commit del drag al store solo al soltar. Un único set → un único
     // snapshot en zundo y una sola escritura a localStorage.
@@ -172,6 +327,17 @@ export function EditorCanvas() {
 
   const onBackgroundDown = (e: ReactPointerEvent<SVGSVGElement>) => {
     if (e.button !== 0) return;
+    if (spaceDown.current) {
+      // Spacebar+drag pan: capturamos el pointer para recibir move/up fuera del SVG.
+      (e.target as Element).setPointerCapture(e.pointerId);
+      panDragRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        startPanX: panXRef.current,
+        startPanY: panYRef.current,
+      };
+      return;
+    }
     ui.clearSelection();
   };
 
@@ -201,6 +367,7 @@ export function EditorCanvas() {
   }
 
   const scale = canvasWidthPx / format.width;
+  const zoom = ui.zoom;
   const background: SlideBackground = slide.background ?? { kind: 'solid', color: assets.theme.colors.bg };
   const editingBlock = editing ? slide.blocks.find((b) => b.id === editing) : null;
 
@@ -257,74 +424,86 @@ export function EditorCanvas() {
       onDrop={onDrop}
       onContextMenu={onCanvasContextMenu}
     >
-      <svg
-        ref={svgRef}
-        viewBox={`0 0 ${format.width} ${format.height}`}
-        xmlns="http://www.w3.org/2000/svg"
-        style={{ width: '100%', height: 'auto', display: 'block', touchAction: 'none', userSelect: 'none' }}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onPointerDown={onBackgroundDown}
+      {/* Zoom + pan wrapper — transforms are purely visual.
+          position: relative makes InlineTextEditor's absolute positioning
+          relative to this wrapper (same coordinate space as the SVG). */}
+      <div
+        ref={zoomWrapperRef}
+        style={{
+          transform: `translate(${ui.panX}px, ${ui.panY}px) scale(${zoom})`,
+          transformOrigin: '0 0',
+          position: 'relative',
+        }}
       >
-        <SlideBackgroundRender bg={background} width={format.width} height={format.height} />
-        {slide.blocks
-          .slice()
-          .sort((a, b) => a.zIndex - b.zIndex)
-          .map((block) => {
-            // Aplica el patch local del drag solo al bloque que se está moviendo.
-            const live = drag && drag.blockId === block.id
-              ? { ...block, rect: drag.currentRect, rotation: drag.currentRotation }
-              : block;
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${format.width} ${format.height}`}
+          xmlns="http://www.w3.org/2000/svg"
+          style={{ width: '100%', height: 'auto', display: 'block', touchAction: 'none', userSelect: 'none' }}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          onPointerDown={onBackgroundDown}
+        >
+          <SlideBackgroundRender bg={background} width={format.width} height={format.height} />
+          {slide.blocks
+            .slice()
+            .sort((a, b) => a.zIndex - b.zIndex)
+            .map((block) => {
+              // Aplica el patch local del drag solo al bloque que se está moviendo.
+              const live = drag && drag.blockId === block.id
+                ? { ...block, rect: drag.currentRect, rotation: drag.currentRotation }
+                : block;
+              return (
+                <g
+                  key={block.id}
+                  onPointerDown={(e) => onBlockPointerDown(block, e)}
+                  onDoubleClick={() => onBlockDoubleClick(block)}
+                  onContextMenu={(e) => onBlockContextMenu(block, e as unknown as React.MouseEvent)}
+                  style={{ cursor: block.locked ? 'default' : 'move', opacity: editing === block.id ? 0 : 1 }}
+                >
+                  <BlockView block={live} theme={assets.theme} fonts={assets.theme.fonts} seed={seed} />
+                </g>
+              );
+            })}
+          {ui.activeGuides.length > 0 && (
+            <GuidesOverlay format={format} activeGuideIds={ui.activeGuides} color={assets.theme.colors.primary} />
+          )}
+          {ui.selectedBlockIds.map((id) => {
+            const b = slide.blocks.find((bl) => bl.id === id);
+            if (!b) return null;
+            // Cuando un path está en edición de nodos, no mostramos los handles
+            // de rect (serían confusos); mostramos solo los puntos.
+            if (ui.pathEditingBlockId === b.id && b.content.kind === 'path') return null;
+            // Handles siguen el rect en vivo durante el drag.
+            const liveRect = drag && drag.blockId === b.id ? drag.currentRect : b.rect;
             return (
-              <g
-                key={block.id}
-                onPointerDown={(e) => onBlockPointerDown(block, e)}
-                onDoubleClick={() => onBlockDoubleClick(block)}
-                onContextMenu={(e) => onBlockContextMenu(block, e as unknown as React.MouseEvent)}
-                style={{ cursor: block.locked ? 'default' : 'move', opacity: editing === block.id ? 0 : 1 }}
-              >
-                <BlockView block={live} theme={assets.theme} fonts={assets.theme.fonts} seed={seed} />
-              </g>
+              <SelectionHandles
+                key={id}
+                rect={liveRect}
+                scale={scale * zoom}
+                onHandleDown={(h, ev) => onHandleDown(b, h, ev)}
+              />
             );
           })}
-        {ui.activeGuides.length > 0 && (
-          <GuidesOverlay format={format} activeGuideIds={ui.activeGuides} color={assets.theme.colors.primary} />
+          {/* Editor de nodos: puntos del path arrastrables. */}
+          {ui.pathEditingBlockId && (() => {
+            const pb = slide.blocks.find((b) => b.id === ui.pathEditingBlockId);
+            if (!pb || pb.content.kind !== 'path') return null;
+            return <PathNodeEditor block={pb} slideId={slide.id} format={format} scale={scale * zoom} />;
+          })()}
+        </svg>
+        {editingBlock && editingBlock.content.kind === 'text' && (
+          <InlineTextEditor
+            block={editingBlock}
+            slideId={slide.id}
+            format={format}
+            canvasWidthPx={canvasWidthPx}
+            fonts={assets.theme.fonts}
+            onDone={() => setEditing(null)}
+          />
         )}
-        {ui.selectedBlockIds.map((id) => {
-          const b = slide.blocks.find((bl) => bl.id === id);
-          if (!b) return null;
-          // Cuando un path está en edición de nodos, no mostramos los handles
-          // de rect (serían confusos); mostramos solo los puntos.
-          if (ui.pathEditingBlockId === b.id && b.content.kind === 'path') return null;
-          // Handles siguen el rect en vivo durante el drag.
-          const liveRect = drag && drag.blockId === b.id ? drag.currentRect : b.rect;
-          return (
-            <SelectionHandles
-              key={id}
-              rect={liveRect}
-              scale={scale}
-              onHandleDown={(h, ev) => onHandleDown(b, h, ev)}
-            />
-          );
-        })}
-        {/* Editor de nodos: puntos del path arrastrables. */}
-        {ui.pathEditingBlockId && (() => {
-          const pb = slide.blocks.find((b) => b.id === ui.pathEditingBlockId);
-          if (!pb || pb.content.kind !== 'path') return null;
-          return <PathNodeEditor block={pb} slideId={slide.id} format={format} />;
-        })()}
-      </svg>
-      {editingBlock && editingBlock.content.kind === 'text' && (
-        <InlineTextEditor
-          block={editingBlock}
-          slideId={slide.id}
-          format={format}
-          canvasWidthPx={canvasWidthPx}
-          fonts={assets.theme.fonts}
-          onDone={() => setEditing(null)}
-        />
-      )}
+      </div>
       {menu && (
         <ContextMenu
           x={menu.x}

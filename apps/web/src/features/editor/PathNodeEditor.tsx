@@ -21,6 +21,9 @@ interface Props {
   block: PositionedBlock;
   slideId: string;
   format: SlideFormat;
+  /** Combined scale (canvasWidthPx/format.width * zoom). Used to keep
+   *  node handles at a constant visual size regardless of viewport zoom. */
+  scale?: number;
 }
 
 interface EditablePoint {
@@ -36,7 +39,7 @@ interface ParsedSegment {
   args: number[];
 }
 
-export function PathNodeEditor({ block, slideId, format }: Props) {
+export function PathNodeEditor({ block, slideId, format, scale = 1 }: Props) {
   const update = useProjectStore((s) => s.updateBlock);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [drag, setDrag] = useState<{ segIdx: number; argOffset: number; startPointer: { x: number; y: number } } | null>(null);
@@ -98,10 +101,10 @@ export function PathNodeEditor({ block, slideId, format }: Props) {
           key={p.id}
           cx={p.x}
           cy={p.y}
-          r={p.pointRole === 'anchor' ? 7 : 5}
+          r={(p.pointRole === 'anchor' ? 7 : 5) / scale}
           fill={p.pointRole === 'anchor' ? '#F1E8D3' : 'transparent'}
           stroke="#2E46C8"
-          strokeWidth={2}
+          strokeWidth={2 / scale}
           style={{ cursor: 'grab' }}
           onPointerDown={onPointerDown(p, p.pointRole === 'anchor'
             ? argOffsetForAnchor(segments[p.segmentIdx]!)
