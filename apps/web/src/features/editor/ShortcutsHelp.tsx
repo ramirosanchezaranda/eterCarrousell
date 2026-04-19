@@ -19,6 +19,10 @@ const GLOBAL: Row[] = [
   { label: 'Pegar imagen / bloques',     keys: ['Ctrl+V'] },
   { label: 'Abrir esta ayuda',           keys: ['?', 'Ctrl+/'] },
   { label: 'Cerrar / deseleccionar',     keys: ['Esc'] },
+  { label: 'Zoom in / out',             keys: ['Ctrl++', 'Ctrl+-'] },
+  { label: 'Reset zoom (100%)',          keys: ['Ctrl+0'] },
+  { label: 'Zoom al cursor',            keys: ['Ctrl+scroll'] },
+  { label: 'Pan (desplazar)',            keys: ['Scroll', 'Espacio+drag'] },
 ];
 
 const SELECTION: Row[] = [
