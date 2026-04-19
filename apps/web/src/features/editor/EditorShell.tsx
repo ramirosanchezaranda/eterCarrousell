@@ -2,8 +2,8 @@
  * Shell del editor: monta Sidebar + EditorCanvas + topbar (undo/redo + export).
  * Es el componente root del nuevo editor (reemplaza al LegacyCarouselApp en App.tsx).
  */
-import { useEffect, useRef } from 'react';
-import { ChevronLeft, ChevronRight, Download, Keyboard, Package, Redo2, Undo2, Loader2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, Download, Keyboard, Maximize2, Minus, Package, Plus, Redo2, Undo2, Loader2 } from 'lucide-react';
 import { BRAND } from '@/domain';
 import { FORMATS } from '@/formats';
 import { useProjectStore } from '@/state/projectStore';
@@ -183,10 +183,11 @@ function TopBar(props: {
 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, justifyContent: 'space-between', marginBottom: 16 }}>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <IconButton onClick={props.onUndo} title="Deshacer (Ctrl+Z)"><Undo2 size={14} /></IconButton>
         <IconButton onClick={props.onRedo} title="Rehacer (Ctrl+Y)"><Redo2 size={14} /></IconButton>
         <IconButton onClick={props.onShowHelp} title="Atajos de teclado (?)"><Keyboard size={14} /></IconButton>
+        <ZoomControls />
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <IconButton onClick={props.onPrev} disabled={props.currentIdx <= 0}><ChevronLeft size={14} /></IconButton>
@@ -229,6 +230,91 @@ function IconButton({ children, onClick, disabled, title }: { children: React.Re
     >
       {children}
     </button>
+  );
+}
+
+const ZOOM_PRESETS = [0.25, 0.5, 0.75, 1, 1.5, 2];
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 4;
+
+function ZoomControls() {
+  const zoom = useUiStore((s) => s.zoom);
+  const setZoom = useUiStore((s) => s.setZoom);
+  const setPan = useUiStore((s) => s.setPan);
+  const [presetOpen, setPresetOpen] = useState(false);
+
+  const zoomIn = () => setZoom(Math.min(MAX_ZOOM, Math.round(zoom * 1.1 * 100) / 100));
+  const zoomOut = () => setZoom(Math.max(MIN_ZOOM, Math.round((zoom / 1.1) * 100) / 100));
+  const resetView = () => { setZoom(1); setPan(0, 0); };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+      <IconButton onClick={zoomOut} title="Alejar (Ctrl+-)"><Minus size={12} /></IconButton>
+      <div style={{ position: 'relative' }}>
+        <button
+          onClick={() => setPresetOpen((v) => !v)}
+          title="Nivel de zoom"
+          style={{
+            background: 'transparent',
+            border: `1px solid ${BRAND.cream}30`,
+            color: BRAND.cream,
+            padding: '6px 8px',
+            borderRadius: 4,
+            cursor: 'pointer',
+            fontFamily: 'monospace',
+            fontSize: 11,
+            minWidth: 46,
+            textAlign: 'center',
+          }}
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+        {presetOpen && (
+          <div
+            style={{
+              position: 'absolute',
+              top: '110%',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              background: '#14141E',
+              border: `1px solid ${BRAND.blue}40`,
+              borderRadius: 6,
+              padding: 4,
+              zIndex: 9999,
+              minWidth: 80,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+            }}
+            onMouseLeave={() => setPresetOpen(false)}
+          >
+            {ZOOM_PRESETS.map((p) => (
+              <button
+                key={p}
+                onClick={() => { setZoom(p); setPan(0, 0); setPresetOpen(false); }}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  background: zoom === p ? `${BRAND.blue}40` : 'transparent',
+                  border: 'none',
+                  color: BRAND.cream,
+                  padding: '6px 12px',
+                  cursor: 'pointer',
+                  fontFamily: 'monospace',
+                  fontSize: 11,
+                  borderRadius: 4,
+                  textAlign: 'center',
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = `${BRAND.blue}30`; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = zoom === p ? `${BRAND.blue}40` : 'transparent'; }}
+              >
+                {Math.round(p * 100)}%
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <IconButton onClick={zoomIn} title="Acercar (Ctrl+=)"><Plus size={12} /></IconButton>
+      <IconButton onClick={resetView} title="Ajustar a pantalla (Ctrl+0)"><Maximize2 size={12} /></IconButton>
+    </div>
   );
 }
 

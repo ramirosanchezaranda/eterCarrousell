@@ -110,6 +110,26 @@ export function useKeyboardShortcuts(opts: KeyboardOptions = {}) {
         e.preventDefault(); opts.downloadCurrent?.(); return;
       }
 
+      // Zoom: Ctrl+= / Ctrl++ zoom in, Ctrl+- zoom out, Ctrl+0 reset
+      if (mod && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        const { zoom, setZoom } = ui;
+        setZoom(Math.min(4, Math.round(zoom * 1.1 * 100) / 100));
+        return;
+      }
+      if (mod && e.key === '-') {
+        e.preventDefault();
+        const { zoom, setZoom } = ui;
+        setZoom(Math.max(0.25, Math.round((zoom / 1.1) * 100) / 100));
+        return;
+      }
+      if (mod && e.key === '0') {
+        e.preventDefault();
+        ui.setZoom(1);
+        ui.setPan(0, 0);
+        return;
+      }
+
       if (mod && e.shiftKey && (e.key === 'd' || e.key === 'D')) {
         e.preventDefault();
         project.duplicateSlide(slideId);
