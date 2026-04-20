@@ -17,6 +17,11 @@ const GLOBAL: Row[] = [
   { label: 'Slide anterior / siguiente', keys: ['PageUp', 'PageDown'] },
   { label: '                        o',  keys: ['Alt+←', 'Alt+→'] },
   { label: 'Pegar imagen / bloques',     keys: ['Ctrl+V'] },
+  { label: 'Zoom in / out',             keys: ['Ctrl++', 'Ctrl+-'] },
+  { label: 'Zoom in (scroll)',           keys: ['Ctrl+Scroll ↑'] },
+  { label: 'Resetear vista (100%)',      keys: ['Ctrl+0'] },
+  { label: 'Pan (desplazar canvas)',     keys: ['Espacio+drag'] },
+  { label: 'Pan con scroll',            keys: ['Scroll sin Ctrl'] },
   { label: 'Abrir esta ayuda',           keys: ['?', 'Ctrl+/'] },
   { label: 'Cerrar / deseleccionar',     keys: ['Esc'] },
 ];
