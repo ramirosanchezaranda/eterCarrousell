@@ -110,6 +110,25 @@ export function useKeyboardShortcuts(opts: KeyboardOptions = {}) {
         e.preventDefault(); opts.downloadCurrent?.(); return;
       }
 
+      // Zoom: Ctrl+= / Ctrl++ → zoom in, Ctrl+- → zoom out, Ctrl+0 → reset
+      if (mod && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        const z = ui.zoom;
+        ui.setZoom(Math.min(4, z * 1.25));
+        return;
+      }
+      if (mod && e.key === '-') {
+        e.preventDefault();
+        const z = ui.zoom;
+        ui.setZoom(Math.max(0.25, z / 1.25));
+        return;
+      }
+      if (mod && e.key === '0') {
+        e.preventDefault();
+        ui.resetView();
+        return;
+      }
+
       if (mod && e.shiftKey && (e.key === 'd' || e.key === 'D')) {
         e.preventDefault();
         project.duplicateSlide(slideId);

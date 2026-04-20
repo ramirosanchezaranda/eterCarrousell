@@ -2,8 +2,8 @@
  * Shell del editor: monta Sidebar + EditorCanvas + topbar (undo/redo + export).
  * Es el componente root del nuevo editor (reemplaza al LegacyCarouselApp en App.tsx).
  */
-import { useEffect, useRef } from 'react';
-import { ChevronLeft, ChevronRight, Download, Keyboard, Package, Redo2, Undo2, Loader2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, Download, Keyboard, Package, Redo2, Undo2, Loader2, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 import { BRAND } from '@/domain';
 import { FORMATS } from '@/formats';
 import { useProjectStore } from '@/state/projectStore';
@@ -122,6 +122,10 @@ export function EditorShell() {
 
   // Atajos de teclado. Pasa handlers de export para Ctrl+S / Ctrl+Shift+S.
   // Se declara al final para que los handlers arriba ya estén inicializados.
+  const handleZoomIn  = () => ui.setZoom(Math.min(4,    ui.zoom * 1.25));
+  const handleZoomOut = () => ui.setZoom(Math.max(0.25, ui.zoom / 1.25));
+  const handleResetView = () => ui.resetView();
+
   useKeyboardShortcuts({
     downloadCurrent: () => void handleDownloadCurrent(),
     downloadAll: () => void handleDownloadAll(),
@@ -145,6 +149,11 @@ export function EditorShell() {
             onShowHelp={() => ui.setShowShortcutsHelp(true)}
             downloading={ui.downloading}
             subtitle={currentSlide ? `${currentSlide.type} — ${currentSlide.templateId} — ${format.label}` : format.label}
+            zoom={ui.zoom}
+            onZoomIn={handleZoomIn}
+            onZoomOut={handleZoomOut}
+            onZoomReset={handleResetView}
+            onZoomSet={(z) => ui.setZoom(z)}
           />
           <div ref={canvasWrapRef}>
             <EditorCanvas />
@@ -168,6 +177,8 @@ export function EditorShell() {
   );
 }
 
+const ZOOM_PRESETS = [0.25, 0.5, 0.75, 1, 1.5, 2];
+
 function TopBar(props: {
   currentIdx: number;
   total: number;
@@ -180,13 +191,76 @@ function TopBar(props: {
   onShowHelp: () => void;
   downloading: boolean;
   subtitle: string;
+  zoom: number;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onZoomReset: () => void;
+  onZoomSet: (z: number) => void;
 }) {
+  const [zoomMenuOpen, setZoomMenuOpen] = useState(false);
+  const zoomPct = Math.round(props.zoom * 100);
+
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, justifyContent: 'space-between', marginBottom: 16 }}>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <IconButton onClick={props.onUndo} title="Deshacer (Ctrl+Z)"><Undo2 size={14} /></IconButton>
         <IconButton onClick={props.onRedo} title="Rehacer (Ctrl+Y)"><Redo2 size={14} /></IconButton>
         <IconButton onClick={props.onShowHelp} title="Atajos de teclado (?)"><Keyboard size={14} /></IconButton>
+        {/* ── Zoom controls ── */}
+        <div style={{ display: 'flex', gap: 2, alignItems: 'center', borderLeft: `1px solid ${BRAND.cream}20`, paddingLeft: 8, marginLeft: 4 }}>
+          <IconButton onClick={props.onZoomOut} title="Zoom out (Ctrl+-)"><ZoomOut size={14} /></IconButton>
+          {/* Clickable zoom % → opens preset menu */}
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={() => setZoomMenuOpen((o) => !o)}
+              title="Zoom (click para presets)"
+              style={{
+                background: 'transparent', border: `1px solid ${BRAND.cream}30`, color: BRAND.cream,
+                padding: '4px 8px', borderRadius: 4, cursor: 'pointer', fontFamily: 'monospace',
+                fontSize: 11, minWidth: 46, textAlign: 'center',
+              }}
+            >
+              {zoomPct}%
+            </button>
+            {zoomMenuOpen && (
+              <div
+                style={{
+                  position: 'absolute', top: '110%', left: 0, zIndex: 9999,
+                  background: '#14141E', border: `1px solid ${BRAND.blue}40`,
+                  borderRadius: 6, overflow: 'hidden', minWidth: 90,
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                }}
+              >
+                {ZOOM_PRESETS.map((z) => (
+                  <button
+                    key={z}
+                    onClick={() => { props.onZoomSet(z); setZoomMenuOpen(false); }}
+                    style={{
+                      display: 'block', width: '100%', textAlign: 'left',
+                      padding: '7px 12px', background: z === props.zoom ? `${BRAND.blue}40` : 'transparent',
+                      border: 'none', color: BRAND.cream, fontSize: 12, cursor: 'pointer',
+                      fontFamily: 'monospace',
+                    }}
+                  >
+                    {Math.round(z * 100)}%
+                  </button>
+                ))}
+                <div style={{ borderTop: `1px solid ${BRAND.cream}15`, margin: '2px 0' }} />
+                <button
+                  onClick={() => { props.onZoomReset(); setZoomMenuOpen(false); }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+                    padding: '7px 12px', background: 'transparent',
+                    border: 'none', color: BRAND.cream, fontSize: 12, cursor: 'pointer',
+                  }}
+                >
+                  <Maximize2 size={11} /> Ajustar pantalla
+                </button>
+              </div>
+            )}
+          </div>
+          <IconButton onClick={props.onZoomIn} title="Zoom in (Ctrl+=)"><ZoomIn size={14} /></IconButton>
+        </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <IconButton onClick={props.onPrev} disabled={props.currentIdx <= 0}><ChevronLeft size={14} /></IconButton>
