@@ -7,9 +7,9 @@
  *  • Render del background del slide (solid / gradient / image) o bg del theme.
  *  • Motor de auto-fix opcional al soltar drag.
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowDown, ArrowUp, ArrowUpCircle, ArrowDownCircle, Copy, Clipboard as ClipboardIcon, Lock, Unlock, Scissors } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpCircle, ArrowDownCircle, Copy, Clipboard as ClipboardIcon, Lock, Unlock, Scissors, Type } from 'lucide-react';
 import type { PositionedBlock, Rect, SlideBackground, SlideFormat } from '@/domain';
 import { FORMATS } from '@/formats';
 import { findNearestSnap } from '@/guides';
@@ -23,6 +23,7 @@ import { SelectionHandles, type HandlePosition } from './SelectionHandles';
 import { PathNodeEditor } from './PathNodeEditor';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { InlineTextEditor } from './InlineTextEditor';
+import { BlockFloatingToolbar } from './BlockFloatingToolbar';
 
 interface DragState {
   blockId: string;
@@ -46,31 +47,174 @@ export function EditorCanvas() {
   const format: SlideFormat = FORMATS[formatId];
   const slide = slides.find((s) => s.id === currentSlideId) ?? slides[0];
   const [drag, setDrag] = useState<DragState | null>(null);
-  const [menu, setMenu] = useState<{ x: number; y: number; blockId?: string } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; blockId?: string; canvasX?: number; canvasY?: number } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
-  const [canvasWidthPx, setCanvasWidthPx] = useState(560);
+  // Medimos el WRAPPER PADRE (no el canvas mismo) para calcular cuánto
+  // espacio tiene disponible y así dimensionar el canvas exactamente.
+  // Problema que esto resuelve: con `width: 92%; height: 92%; aspect-ratio`
+  // los tres valores pueden contradecirse y el browser rinde uno u otro
+  // de forma inconsistente — el canvas aparecía cortado o deformado en
+  // algunos viewports.
+  const [parentSize, setParentSize] = useState<{ w: number; h: number }>({ w: 560, h: 700 });
+  useEffect(() => {
+    const el = containerRef.current?.parentElement;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const measure = () => {
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      if (w > 0 && h > 0) setParentSize({ w, h });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
+  // Calcula tamaño óptimo del canvas: escala fit que respeta aspect-ratio
+  // del slide y deja un pequeño margen (92% del espacio) para que no toque
+  // los bordes del wrapper. Funciona idéntico a Canva/Figma: el slide
+  // siempre cabe completo y respira.
+  const fit = Math.min(
+    (parentSize.w * 0.96) / format.width,
+    (parentSize.h * 0.96) / format.height,
+  );
+  const canvasWidthPx = Math.max(120, Math.floor(format.width * fit));
+  const canvasHeightPx = Math.max(120, Math.floor(format.height * fit));
+
+  const zoom = ui.zoom;
+  const pan = ui.pan;
+  /**
+   * Canvas FLUIDO: ocupa el máximo disponible del parent manteniendo
+   * aspect-ratio del format. El parent (canvasWrapRef) es un flex centering
+   * que le da altura completa. El navegador calcula width/height
+   * respetando el aspect-ratio de manera que ambos `max-width: 100%` y
+   * `max-height: 100%` se cumplan.
+   *
+   * El zoom interno del SVG se sigue manejando con `viewBox` (estilo
+   * Photoshop/Figma): el tamaño visual del canvas no cambia al hacer
+   * zoom, solo lo que se ve adentro.
+   */
   const containerStyle = useMemo(() => ({
-    maxWidth: 560,
-    margin: '0 auto',
-    boxShadow: '0 30px 80px rgba(46, 70, 200, 0.3)',
-    borderRadius: 8,
+    // Dimensiones en PX calculadas con el fit exacto. No usamos % +
+    // aspect-ratio porque los browsers resuelven inconsistentemente
+    // cuando width, height y aspect-ratio coexisten.
+    width: canvasWidthPx,
+    height: canvasHeightPx,
+    flexShrink: 0,
+    boxShadow: '0 20px 60px rgba(46, 70, 200, 0.28)',
+    borderRadius: 10,
     overflow: 'hidden',
     background: assets.theme.colors.bg,
     position: 'relative' as const,
-  }), [assets.theme.colors.bg]);
+  }), [assets.theme.colors.bg, canvasWidthPx, canvasHeightPx]);
 
+  // Dimensiones del viewBox actual. A zoom=1 coinciden con el format
+  // completo. A zoom=4 mostramos 1/4 del canvas en cada eje.
+  const viewW = format.width / zoom;
+  const viewH = format.height / zoom;
+
+  // Clamp helper para mantener el pan dentro del canvas.
+  const clampPan = useCallback((p: { x: number; y: number }, vw: number, vh: number) => ({
+    x: Math.max(0, Math.min(format.width - vw, p.x)),
+    y: Math.max(0, Math.min(format.height - vh, p.y)),
+  }), [format]);
+
+  /**
+   * Wheel handler — registrado nativo con `{ passive: false }` para poder
+   * hacer `preventDefault` (React onWheel es passive y el browser ignora
+   * el preventDefault silenciosamente → historico bug del zoom del navegador).
+   *
+   *   - Ctrl/⌘ + scroll  → zoom-to-cursor (el punto bajo el mouse se queda
+   *                         fijo en pantalla mientras el resto se acerca).
+   *   - Scroll sin ctrl  → pan vertical (si zoom > 1).
+   *   - Shift + scroll   → pan horizontal (si zoom > 1).
+   */
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const svgBounds = () => svgRef.current?.getBoundingClientRect() ?? null;
+
+    const onWheel = (e: WheelEvent) => {
+      const bounds = svgBounds();
+      if (!bounds) return;
+      const { zoom: z, pan: p } = useUiStore.getState();
+
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        // Paso exponencial de 12% por notch. Mínimo 1x (no dejamos alejarse
+        // del 100% para que el canvas no se vea recortado con bordes raros).
+        const factor = e.deltaY > 0 ? 1 / 1.12 : 1.12;
+        const newZoom = Math.max(1, Math.min(4, Number((z * factor).toFixed(3))));
+        if (newZoom === z) return;
+
+        // Punto del cursor en coords del canvas (antes del zoom).
+        const relX = (e.clientX - bounds.left) / bounds.width;
+        const relY = (e.clientY - bounds.top) / bounds.height;
+        const oldVW = format.width / z;
+        const oldVH = format.height / z;
+        const cursorCanvasX = p.x + relX * oldVW;
+        const cursorCanvasY = p.y + relY * oldVH;
+
+        // Nuevo pan: recalculamos para que el cursor siga apuntando al
+        // mismo punto del canvas después del zoom.
+        const newVW = format.width / newZoom;
+        const newVH = format.height / newZoom;
+        const newPan = clampPan({
+          x: cursorCanvasX - relX * newVW,
+          y: cursorCanvasY - relY * newVH,
+        }, newVW, newVH);
+
+        ui.setZoom(newZoom);
+        ui.setPan(newPan);
+        return;
+      }
+
+      // Sin Ctrl: pan (solo útil cuando hay zoom, si no no hay a dónde ir).
+      if (z <= 1.01) return;
+      e.preventDefault();
+      // Paneo en unidades de canvas proporcional al delta del mouse.
+      // `speedFactor` es el ratio unidades-canvas/pixel-pantalla.
+      const speedFactor = (format.width / zoom) / bounds.width;
+      const dx = (e.shiftKey ? e.deltaY : e.deltaX) * speedFactor;
+      const dy = (e.shiftKey ? 0 : e.deltaY) * speedFactor;
+      const newPan = clampPan({
+        x: p.x + dx,
+        y: p.y + dy,
+      }, viewW, viewH);
+      ui.setPan(newPan);
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [format, ui, clampPan, viewW, viewH, zoom]);
+
+  /**
+   * Convierte coords de pantalla (mouse/pointer) a coords del canvas
+   * teniendo en cuenta el viewBox actual (que incluye zoom y pan).
+   *
+   *   canvasX = pan.x + relX * (format.width / zoom)
+   */
   const pointerToCanvas = useCallback((e: { clientX: number; clientY: number }): { x: number; y: number } => {
     const svg = svgRef.current;
     if (!svg) return { x: 0, y: 0 };
     const rect = svg.getBoundingClientRect();
     const vx = (e.clientX - rect.left) / rect.width;
     const vy = (e.clientY - rect.top) / rect.height;
-    return { x: vx * format.width, y: vy * format.height };
-  }, [format]);
+    return {
+      x: pan.x + vx * viewW,
+      y: pan.y + vy * viewH,
+    };
+  }, [pan.x, pan.y, viewW, viewH]);
 
   const onBlockPointerDown = (block: PositionedBlock, e: ReactPointerEvent<SVGElement>) => {
     if (e.button !== 0) return; // ignora right-click (eso lo maneja onContextMenu)
+    // En mobile (touch) NO iniciamos drag: solo seleccionamos, para que el
+    // gesto de un dedo siga haciendo scroll de la página. El drag/resize en
+    // mobile se hace editando x/y/w/h desde el PropertiesPanel a la derecha.
+    if (e.pointerType === 'touch') {
+      ui.selectBlock(block.id, e.shiftKey);
+      return;
+    }
     e.stopPropagation();
     if (block.locked) { ui.selectBlock(block.id, e.shiftKey); return; }
     (e.target as Element).setPointerCapture(e.pointerId);
@@ -86,11 +230,18 @@ export function EditorCanvas() {
     });
   };
 
-  const onBlockDoubleClick = (block: PositionedBlock) => {
+  const onBlockDoubleClick = (block: PositionedBlock, e: React.MouseEvent) => {
+    e.stopPropagation();
     if (block.content.kind === 'text') {
       setEditing(block.id);
       ui.selectBlock(block.id);
     }
+  };
+
+  const onCanvasDoubleClick = (_e: React.MouseEvent<SVGSVGElement>) => {
+    if (!slide) return;
+    const newId = projectStore.addTextBlock(slide.id, 'Nuevo texto', format, assets.theme);
+    ui.setSelectedBlockIds([newId]);
   };
 
   const onBlockContextMenu = (block: PositionedBlock, e: ReactPointerEvent<SVGElement> | React.MouseEvent) => {
@@ -102,7 +253,8 @@ export function EditorCanvas() {
 
   const onCanvasContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    setMenu({ x: e.clientX, y: e.clientY });
+    const cp = pointerToCanvas(e);
+    setMenu({ x: e.clientX, y: e.clientY, canvasX: cp.x, canvasY: cp.y });
   };
 
   const onHandleDown = (block: PositionedBlock, handle: HandlePosition, e: ReactPointerEvent<SVGElement>) => {
@@ -200,11 +352,27 @@ export function EditorCanvas() {
     );
   }
 
-  const scale = canvasWidthPx / format.width;
+  // Scale px/canvas-unit DESPUÉS del zoom interno (viewBox): handles y
+  // toolbar deben verse al mismo tamaño visual independientemente del zoom,
+  // así que compensamos multiplicando por `zoom`.
+  const screenScale = (canvasWidthPx / format.width) * zoom;
+  const scale = screenScale; // alias — más claro en el resto del componente.
   const background: SlideBackground = slide.background ?? { kind: 'solid', color: assets.theme.colors.bg };
   const editingBlock = editing ? slide.blocks.find((b) => b.id === editing) : null;
 
   const canvasContextMenuItems = (): ContextMenuItem[] => [
+    {
+      key: 'add-text',
+      label: 'Agregar texto',
+      icon: <Type size={12} />,
+      hotkey: 'T',
+      onSelect: () => {
+        if (!slide) return;
+        const newId = projectStore.addTextBlock(slide.id, 'Nuevo texto', format, assets.theme);
+        ui.setSelectedBlockIds([newId]);
+      },
+    },
+    { key: 'sep0', label: '', separator: true, onSelect: () => {} },
     {
       key: 'paste-image',
       label: 'Pegar imagen del portapapeles',
@@ -237,6 +405,17 @@ export function EditorCanvas() {
     const b = slide.blocks.find((x) => x.id === blockId);
     if (!b) return [];
     return [
+      {
+        key: 'add-text',
+        label: 'Agregar texto',
+        icon: <Type size={12} />,
+        hotkey: 'T',
+        onSelect: () => {
+          const newId = projectStore.addTextBlock(slide.id, 'Nuevo texto', format, assets.theme);
+          ui.setSelectedBlockIds([newId]);
+        },
+      },
+      { key: 'sep-addtext', label: '', separator: true, onSelect: () => {} },
       { key: 'dup', label: 'Duplicar',        icon: <Copy size={12} />,     hotkey: 'Ctrl+D', onSelect: () => { const nid = projectStore.duplicateBlock(slide.id, blockId); if (nid) ui.setSelectedBlockIds([nid]); } },
       { key: 'cut', label: 'Eliminar',        icon: <Scissors size={12} />, hotkey: 'Del',    danger: true, onSelect: () => { projectStore.removeBlock(slide.id, blockId); ui.clearSelection(); } },
       { key: 'sep1', label: '', separator: true, onSelect: () => {} },
@@ -251,7 +430,7 @@ export function EditorCanvas() {
 
   return (
     <div
-      ref={(el) => { containerRef.current = el; if (el) setCanvasWidthPx(el.clientWidth); }}
+      ref={containerRef}
       style={containerStyle}
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDrop}
@@ -259,13 +438,14 @@ export function EditorCanvas() {
     >
       <svg
         ref={svgRef}
-        viewBox={`0 0 ${format.width} ${format.height}`}
+        viewBox={`${pan.x} ${pan.y} ${viewW} ${viewH}`}
         xmlns="http://www.w3.org/2000/svg"
-        style={{ width: '100%', height: 'auto', display: 'block', touchAction: 'none', userSelect: 'none' }}
+        style={{ width: '100%', height: 'auto', display: 'block', touchAction: 'pan-y', userSelect: 'none' }}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onPointerDown={onBackgroundDown}
+        onDoubleClick={onCanvasDoubleClick}
       >
         <SlideBackgroundRender bg={background} width={format.width} height={format.height} />
         {slide.blocks
@@ -280,7 +460,7 @@ export function EditorCanvas() {
               <g
                 key={block.id}
                 onPointerDown={(e) => onBlockPointerDown(block, e)}
-                onDoubleClick={() => onBlockDoubleClick(block)}
+                onDoubleClick={(e) => onBlockDoubleClick(block, e as unknown as React.MouseEvent)}
                 onContextMenu={(e) => onBlockContextMenu(block, e as unknown as React.MouseEvent)}
                 style={{ cursor: block.locked ? 'default' : 'move', opacity: editing === block.id ? 0 : 1 }}
               >
@@ -315,6 +495,30 @@ export function EditorCanvas() {
           return <PathNodeEditor block={pb} slideId={slide.id} format={format} />;
         })()}
       </svg>
+      {/**
+       * Toolbar flotante contextual: aparece sobre el bloque seleccionado
+       * con acciones rápidas (bold/italic/color en textos, reemplazar en
+       * imágenes, duplicar/eliminar/lock/z-order en todos). No aparece si
+       * hay selección múltiple, si está en edición inline, o si está en
+       * modo edición de nodos de path.
+       */}
+      {ui.selectedBlockIds.length === 1 && !editing && (() => {
+        const selId = ui.selectedBlockIds[0]!;
+        const sel = slide.blocks.find((b) => b.id === selId);
+        if (!sel) return null;
+        if (ui.pathEditingBlockId === sel.id) return null;
+        const live = drag && drag.blockId === sel.id ? drag.currentRect : sel.rect;
+        return (
+          <BlockFloatingToolbar
+            block={sel}
+            slideId={slide.id}
+            scale={scale}
+            panX={pan.x}
+            panY={pan.y}
+            liveRect={live}
+          />
+        );
+      })()}
       {editingBlock && editingBlock.content.kind === 'text' && (
         <InlineTextEditor
           block={editingBlock}

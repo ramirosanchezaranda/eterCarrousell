@@ -15,27 +15,53 @@ import { BRAND } from '@/domain';
 import { useAssetsStore } from '@/state/assetsStore';
 import { loadCustomFont, unloadCustomFont } from '@/assets/fonts';
 
+interface UploadProgress {
+  total: number;
+  done: number;
+  failed: Array<{ name: string; error: string }>;
+}
+
 export function FontGallery() {
   const assets = useAssetsStore();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState<UploadProgress | null>(null);
 
+  /**
+   * Procesa todas las fuentes seleccionadas en paralelo con Promise.all.
+   * Esto es bastante más rápido que el loop secuencial que había antes
+   * porque `loadCustomFont` hace I/O (FileReader + FontFace.load) y se
+   * puede solapar. Muestra progress "X / Y" mientras carga, y lista los
+   * fallos al final (p.ej. woff2 que FontFace rechace).
+   */
   const onFiles = async (files: FileList | null) => {
-    if (!files) return;
-    setUploading(true);
-    try {
-      for (let i = 0; i < files.length; i++) {
-        const f = files[i];
-        if (!f) continue;
-        const font = await loadCustomFont(f, `gal-${Date.now()}-${i}`);
+    if (!files || files.length === 0) return;
+    const list = Array.from(files);
+    setProgress({ total: list.length, done: 0, failed: [] });
+    const batchId = Date.now();
+    const results = await Promise.allSettled(
+      list.map(async (f, i) => {
+        const font = await loadCustomFont(f, `gal-${batchId}-${i}`);
         await assets.addCustomFont(font);
-      }
-    } catch (err) {
-      console.error('font upload failed', err);
-    } finally {
-      setUploading(false);
+        setProgress((p) => (p ? { ...p, done: p.done + 1 } : p));
+      })
+    );
+    const failed = results
+      .map((r, i) => ({ r, name: list[i]?.name ?? 'unknown' }))
+      .filter(({ r }) => r.status === 'rejected')
+      .map(({ r, name }) => ({
+        name,
+        error: (r as PromiseRejectedResult).reason instanceof Error
+          ? ((r as PromiseRejectedResult).reason as Error).message
+          : String((r as PromiseRejectedResult).reason),
+      }));
+    setProgress((p) => (p ? { ...p, done: list.length, failed } : p));
+    // Auto-limpieza del banner de progreso si todo OK.
+    if (failed.length === 0) {
+      setTimeout(() => setProgress(null), 1200);
     }
   };
+
+  const uploading = !!progress && progress.done < progress.total;
 
   const activeDisplay = assets.customDisplay?.internalName ?? null;
   const activeSans = assets.customSans?.internalName ?? null;
@@ -52,12 +78,57 @@ export function FontGallery() {
   return (
     <div>
       <button onClick={() => inputRef.current?.click()} disabled={uploading} style={uploadBtn}>
-        <Plus size={13} /> {uploading ? 'Subiendo...' : 'Subir fuentes'}
+        <Plus size={13} /> {uploading ? `Subiendo ${progress!.done}/${progress!.total}...` : 'Subir fuentes'}
       </button>
       <p style={{ fontSize: 10, opacity: 0.5, lineHeight: 1.5, marginTop: 6, marginBottom: 10 }}>
-        .ttf / .otf / .woff / .woff2 — podés subir varias a la vez.
+        .ttf / .otf / .woff / .woff2 — seleccioná varias a la vez con Ctrl/Shift.
         <br />Usá <strong>Display</strong> para titulares y <strong>Sans</strong> para texto de soporte.
       </p>
+      {/* Progress bar mientras cargan en paralelo */}
+      {progress && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{
+            height: 4,
+            background: '#14141E',
+            borderRadius: 2,
+            overflow: 'hidden',
+            marginBottom: 4,
+          }}>
+            <div style={{
+              height: '100%',
+              width: `${Math.round((progress.done / progress.total) * 100)}%`,
+              background: BRAND.blue,
+              transition: 'width 150ms ease',
+            }} />
+          </div>
+          {progress.failed.length > 0 && (
+            <div style={{
+              padding: 6,
+              background: '#2A1414',
+              border: '1px solid #FF6B6B40',
+              borderRadius: 4,
+              fontSize: 10,
+              lineHeight: 1.5,
+            }}>
+              <strong style={{ color: '#FF6B6B' }}>{progress.failed.length} fuente{progress.failed.length === 1 ? '' : 's'} fallaron:</strong>
+              {progress.failed.slice(0, 4).map((f, i) => (
+                <div key={i} style={{ opacity: 0.75, marginTop: 2 }}>
+                  • {f.name} — {f.error.slice(0, 60)}
+                </div>
+              ))}
+              <button
+                onClick={() => setProgress(null)}
+                style={{
+                  marginTop: 4, background: 'transparent', border: 'none',
+                  color: BRAND.cream, opacity: 0.5, fontSize: 10, cursor: 'pointer', padding: 0,
+                }}
+              >
+                cerrar
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {assets.fontGallery.length === 0 ? (
         <div style={emptyStyle}>Sin fuentes aún.</div>
       ) : (

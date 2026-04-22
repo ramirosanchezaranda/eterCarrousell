@@ -68,7 +68,9 @@ export function PropertiesPanel({ block, slideId }: Props) {
           setApplyFlash(n);
           setTimeout(() => setApplyFlash(null), 2200);
         }}
-        title="Copia estilo y efectos (no el texto ni el rect) a bloques del mismo tipo en las otras slides"
+        title={block.content.kind === 'text'
+          ? 'Aplica tipografía, color, gradient, contorno y efectos a los bloques del mismo tipo en las otras slides. El TEXTO de cada slide se conserva intacto.'
+          : 'Clona este bloque (rect, contenido y efectos) en todas las otras slides.'}
         style={{
           width: '100%', marginBottom: 10, padding: '9px 10px',
           background: applyFlash !== null ? '#4AE29030' : `${BRAND.blue}20`,
@@ -81,7 +83,9 @@ export function PropertiesPanel({ block, slideId }: Props) {
         <Copy size={13} />
         {applyFlash !== null
           ? `✓ Aplicado a ${applyFlash} ${applyFlash === 1 ? 'página' : 'páginas'}`
-          : 'Aplicar a todas las páginas'}
+          : block.content.kind === 'text'
+            ? 'Aplicar estilo a todas las páginas'
+            : 'Aplicar a todas las páginas'}
       </button>
       <div style={row}>
         <Num label="X" value={Math.round(block.rect.x)} onChange={(v) => patchRect('x', v)} />
@@ -391,7 +395,11 @@ function Num({ label, value, min, max, step, onChange, suffix }: {
         type="number"
         value={text}
         min={min} max={max} step={step}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          setText(e.target.value);
+          const n = Number(e.target.value);
+          if (!isNaN(n) && e.target.value.trim() !== '') onChange(n);
+        }}
         onBlur={commit}
         onKeyDown={(e) => { if (e.key === 'Enter') { commit(); (e.target as HTMLInputElement).blur(); } }}
         style={numInput}

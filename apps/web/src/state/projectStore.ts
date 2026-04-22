@@ -88,6 +88,33 @@ const initialState: ProjectState = {
 };
 
 /**
+ * Clon profundo del `content` de un bloque. Usado por
+ * `applyBlockStyleToAllSlides` para asegurar que cada slide recibe una
+ * copia independiente (mutar el overlay o los effects en una slide no
+ * afecta a las otras).
+ */
+function cloneContent(c: PositionedBlock['content']): PositionedBlock['content'] {
+  if (c.kind === 'image') {
+    return { ...c, effects: c.effects ? c.effects.map((e) => ({ ...e })) : undefined };
+  }
+  if (c.kind === 'decor') {
+    return {
+      ...c,
+      overlay: c.overlay ? { ...c.overlay } : undefined,
+      effects: c.effects ? c.effects.map((e) => ({ ...e })) : undefined,
+    };
+  }
+  if (c.kind === 'shape') {
+    return { ...c };
+  }
+  if (c.kind === 'path') {
+    return { ...c };
+  }
+  // text: no debería llegar aquí (el caller filtra), pero por type-safety:
+  return { ...c };
+}
+
+/**
  * Combina el contenido destino con SÓLO los campos de estilo/efectos del
  * source. Preserva texto, src de imagen, forma y otros datos del destino.
  */
@@ -321,11 +348,18 @@ export const useProjectStore = create<ProjectState & ProjectActions>()(
         const pickText = (g: (typeof generated)[number]): string[] => {
           // Lista de textos a colocar en los bloques de texto del slide.
           // Primero el line1, luego line2/number/caption si existen.
+          // Descartamos strings vacíos o whitespace puro para no pisar
+          // el placeholder con "" (causaba slides en blanco cuando el
+          // LLM devolvía line1 corrupto).
+          const push = (out: string[], v: string | undefined): void => {
+            const t = typeof v === 'string' ? v.trim() : '';
+            if (t.length > 0) out.push(t);
+          };
           const out: string[] = [];
-          if (g.line1) out.push(g.line1);
-          if (g.line2) out.push(g.line2);
-          if (g.number) out.push(g.number);
-          if (g.caption) out.push(g.caption);
+          push(out, g.line1);
+          push(out, g.line2);
+          push(out, g.number);
+          push(out, g.caption);
           return out;
         };
         set((s) => ({
@@ -381,26 +415,83 @@ export const useProjectStore = create<ProjectState & ProjectActions>()(
         const source = get().slides.find((s) => s.id === slideId)?.blocks.find((b) => b.id === blockId);
         if (!source) return 0;
         let touched = 0;
+
+        // RAMA 1 — TEXTO. Copiamos estilo visual + efectos a todos los
+        // bloques del mismo `kind` en las otras slides, PERO preservamos
+        // el texto de cada destino (cover, observation, quote, etc. tienen
+        // cada una su propia copia). Esto permite unificar color/fuente/
+        // efectos globalmente sin pisar el contenido.
+        if (source.content.kind === 'text') {
+          set((s) => ({
+            slides: s.slides.map((slide) => {
+              if (slide.id === slideId) return slide;
+              const matches = slide.blocks.filter((b) => b.kind === source.kind && b.content.kind === 'text');
+              if (matches.length === 0) return slide;
+              touched++;
+              return {
+                ...slide,
+                blocks: slide.blocks.map((b) => {
+                  if (b.kind !== source.kind || b.content.kind !== 'text') return b;
+                  if (source.content.kind !== 'text') return b;
+                  // Preserva `text` y `runs` (contenido único por slide)
+                  // pero adopta estilos visuales + efectos del source.
+                  const src = source.content;
+                  return {
+                    ...b,
+                    rotation: source.rotation,
+                    style: source.style ? { ...source.style } : undefined,
+                    content: {
+                      ...b.content,
+                      // Propiedades tipográficas
+                      fontRole: src.fontRole,
+                      fontFamilyOverride: src.fontFamilyOverride,
+                      fontSize: src.fontSize,
+                      fontWeight: src.fontWeight,
+                      fontStyle: src.fontStyle,
+                      letterSpacing: src.letterSpacing,
+                      lineHeight: src.lineHeight,
+                      textAlign: src.textAlign,
+                      upper: src.upper,
+                      // Color / decoración
+                      color: src.color,
+                      underline: src.underline,
+                      strike: src.strike,
+                      stroke: src.stroke ? { ...src.stroke } : undefined,
+                      gradientFill: src.gradientFill
+                        ? { ...src.gradientFill, stops: src.gradientFill.stops.map((st) => ({ ...st })) }
+                        : undefined,
+                      // Efectos SVG (los efectos aplicables a texto)
+                      effects: src.effects ? src.effects.map((e) => ({ ...e })) : undefined,
+                    },
+                  } as PositionedBlock;
+                }),
+              };
+            }),
+          }));
+          return touched;
+        }
+
+        // RAMA 2 — IMAGEN / SHAPE / DECOR / PATH. Clonamos el bloque source
+        // completo (rect, content, effects, rotation, style, zIndex). Si
+        // ya hay un bloque del mismo `kind` en la slide destino, reemplazamos
+        // el primero preservando su id. Si no hay, lo agregamos.
         set((s) => ({
           slides: s.slides.map((slide) => {
             if (slide.id === slideId) return slide;
-            const matching = slide.blocks.filter((b) => b.kind === source.kind);
-            if (matching.length === 0) return slide;
-            touched++;
-            return {
-              ...slide,
-              blocks: slide.blocks.map((b) => {
-                if (b.kind !== source.kind) return b;
-                // Replica estilo/efectos pero conserva texto, src de imagen y rect.
-                const copy: PositionedBlock = {
-                  ...b,
-                  style: source.style ? { ...source.style } : undefined,
-                  rotation: source.rotation,
-                  content: replicateContentStyle(b.content, source.content),
-                };
-                return copy;
-              }),
+            const existingIdx = slide.blocks.findIndex((b) => b.kind === source.kind);
+            const cloned: PositionedBlock = {
+              ...source,
+              id: existingIdx >= 0 ? slide.blocks[existingIdx]!.id : nanoid(),
+              rect: { ...source.rect },
+              content: cloneContent(source.content),
             };
+            touched++;
+            if (existingIdx >= 0) {
+              const next = slide.blocks.slice();
+              next[existingIdx] = cloned;
+              return { ...slide, blocks: next };
+            }
+            return { ...slide, blocks: [...slide.blocks, cloned] };
           }),
         }));
         return touched;

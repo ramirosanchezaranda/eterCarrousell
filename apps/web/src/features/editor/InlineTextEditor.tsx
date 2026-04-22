@@ -148,7 +148,17 @@ export function InlineTextEditor({ block, slideId, format, canvasWidthPx, fonts,
         onKeyUp={refreshSelState}
         onKeyDown={(e) => {
           if (e.key === 'Escape') { e.preventDefault(); onDone(); return; }
+          // Ctrl+Enter confirma (salir del editor). Enter pelado inserta un
+          // salto de línea REAL (<br>) — antes Chrome creaba <div>s anidados
+          // y al parsear se perdía la línea porque walk() no detectaba el
+          // salto implícito. Forzamos insertLineBreak para que siempre
+          // quede un <br> explícito.
           if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { commit(); return; }
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            document.execCommand('insertLineBreak');
+            return;
+          }
           // Ctrl+B / I / U — atajos estándar
           if (e.ctrlKey || e.metaKey) {
             const k = e.key.toLowerCase();
@@ -275,11 +285,22 @@ function walk(node: Node, inherited: { bold: boolean; italic: boolean; underline
     color: style.color && style.color.length > 0 ? style.color : inherited.color,
   };
 
-  // <br> agrega un salto de línea como texto (aunque en este editor los runs
-  // no dividen por líneas por ahora — eso se maneja por el wrap del SVG).
+  // <br> agrega un salto de línea explícito.
   if (tag === 'BR') {
     out.push({ text: '\n', ...(inherited.color ? { color: inherited.color } : {}) });
     return;
+  }
+
+  // <div> o <p> son bloques: el browser los inserta al apretar Enter si
+  // no logramos interceptar (algunos browsers ignoran `insertLineBreak`).
+  // Tratamos cada uno como un salto de línea IMPLÍCITO cuando hay contenido
+  // previo — así "línea 1<div>línea 2</div>" queda como "línea 1\nlínea 2".
+  const isBlock = tag === 'DIV' || tag === 'P';
+  if (isBlock && out.length > 0) {
+    const last = out[out.length - 1];
+    if (last && !last.text.endsWith('\n')) {
+      out.push({ text: '\n', ...(inherited.color ? { color: inherited.color } : {}) });
+    }
   }
 
   el.childNodes.forEach((child) => walk(child, next, out));

@@ -56,7 +56,22 @@ export function parseSlidesJson(raw: string): GeneratedSlide[] {
   try { parsed = JSON.parse(text); }
   catch { throw new Error('Respuesta no es JSON válido'); }
   if (!Array.isArray(parsed)) throw new Error('Respuesta no es un array');
-  const valid = parsed
+  // Pre-limpieza: algunos LLMs devuelven line1 con whitespace puro o " ".
+  // Recortamos strings y descartamos filas donde line1 quede vacío — así
+  // el slide 1 (cover) nunca se queda sin título por un LLM flaco.
+  const normalized = parsed.map((s) => {
+    if (!s || typeof s !== 'object') return s;
+    const o = s as Record<string, unknown>;
+    const trim = (v: unknown): string | undefined => typeof v === 'string' ? v.trim() : undefined;
+    return {
+      ...o,
+      line1: trim(o.line1),
+      line2: trim(o.line2),
+      number: trim(o.number),
+      caption: trim(o.caption),
+    };
+  });
+  const valid = normalized
     .map((s) => GeneratedSlideSchema.safeParse(s))
     .filter((r): r is { success: true; data: GeneratedSlide } => r.success)
     .map((r) => r.data);

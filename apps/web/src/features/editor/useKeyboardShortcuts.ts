@@ -26,6 +26,8 @@
 import { useEffect } from 'react';
 import { useProjectStore } from '@/state/projectStore';
 import { useUiStore } from '@/state/uiStore';
+import { useAssetsStore } from '@/state/assetsStore';
+import { FORMATS } from '@/formats';
 
 /**
  * undo/redo "smart": zundo puede acumular snapshots intermedios que son
@@ -144,6 +146,19 @@ export function useKeyboardShortcuts(opts: KeyboardOptions = {}) {
           return;
         }
         // Si no hay clipboard interno, dejamos que el handler de documento (galería) tome el paste.
+      }
+
+      // T — añadir bloque de texto (igual que Figma/Canva; no usa modificador
+      //     para no chocar con Ctrl+T del browser que abre nueva pestaña)
+      if (!mod && !e.shiftKey && !e.altKey && (e.key === 't' || e.key === 'T')) {
+        e.preventDefault();
+        if (slide) {
+          const format = FORMATS[project.formatId];
+          const theme = useAssetsStore.getState().theme;
+          const newId = project.addTextBlock(slideId, 'Nuevo texto', format, theme);
+          ui.setSelectedBlockIds([newId]);
+        }
+        return;
       }
 
       // ───── Con selección ─────

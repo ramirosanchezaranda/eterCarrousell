@@ -236,7 +236,12 @@ export interface Project {
 /** Vector 2D, usado para puntos de snap y anchors. */
 export interface Vec2 { x: number; y: number }
 
-/** Efectos SVG aplicables a cualquier bloque (texto, imagen, shape, decor). */
+/**
+ * Efectos SVG aplicables a cualquier bloque (texto, imagen, shape, decor).
+ * Todos se implementan con primitivos SVG puros (feColorMatrix,
+ * feGaussianBlur, feComponentTransfer, feTurbulence, feMerge, feFlood,
+ * feOffset) para que se exporten igual en JPEG/PNG sin depender del canvas.
+ */
 export type ImageEffect =
   | { kind: 'grayscale' }
   | { kind: 'sepia' }
@@ -248,7 +253,25 @@ export type ImageEffect =
   | { kind: 'hue'; deg: number }             // 0..360
   | { kind: 'duotone'; dark: string; light: string }
   | { kind: 'ascii'; density: number }       // 0..1, genera pattern de texto
-  | { kind: 'halftone'; size: number };      // tamaño del dot pattern
+  | { kind: 'halftone'; size: number }       // tamaño del dot pattern
+  | { kind: 'opacity'; value: number }       // 0..1, transparencia del bloque entero
+  | { kind: 'shadow'; dx: number; dy: number; blur: number; color: string; opacity: number } // drop shadow
+  | { kind: 'glow'; radius: number; color: string; opacity: number }  // outer glow (sin offset)
+  | { kind: 'noise'; amount: number; scale: number }                  // grano/ruido encima
+  | { kind: 'vignette'; intensity: number; spread: number }           // 0..1 (int) / 0..1 (spread)
+  | { kind: 'posterize'; levels: number }                             // 2..8 niveles por canal
+  | { kind: 'pixelate'; size: number }                                // tamaño del bloque pixelado
+  | { kind: 'chromatic'; offset: number }                             // aberración cromática (RGB split)
+  | { kind: 'scanlines'; gap: number; opacity: number }               // líneas horizontales CRT
+  | { kind: 'emboss'; strength: number }                              // relieve con convolución
+  | { kind: 'sharpen'; strength: number }                             // realce de bordes
+  | { kind: 'overlay-color'; color: string; opacity: number }         // teñido plano encima
+  | { kind: 'threshold'; level: number }                              // blanco/negro binario
+  | { kind: 'inner-shadow'; dx: number; dy: number; blur: number; color: string; opacity: number }
+  | { kind: 'gradient-map'; dark: string; mid: string; light: string } // mapa de luminancia a 3 colores
+  | { kind: 'bloom'; threshold: number; radius: number; intensity: number } // glow cinematográfico sobre luces
+  | { kind: 'outline'; width: number; color: string }                 // contorno del alpha
+  | { kind: 'motion-blur'; strength: number; angle: number };         // blur direccional
 
 /** Relleno con gradiente lineal para texto y shapes. */
 export interface GradientFill {

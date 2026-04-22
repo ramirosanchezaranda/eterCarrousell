@@ -242,23 +242,78 @@ function GuidesTabContent() {
       <p style={{ fontSize: 10, opacity: 0.5, lineHeight: 1.5, marginBottom: 14 }}>
         {ui.autoFixEnabled ? 'Motor corrige overlaps, márgenes y contraste al soltar.' : 'Libertad total: colocá bloques donde quieras. Warnings como aviso.'}
       </p>
+      <SectionTitle>Visibilidad de guías</SectionTitle>
+      <div style={{ marginBottom: 10, padding: 8, background: '#0A0A14', border: `1px solid ${BRAND.cream}15`, borderRadius: 4 }}>
+        <GuideGlobalSlider
+          label="Opacidad default"
+          value={ui.defaultGuideOpacity}
+          min={0.1} max={1} step={0.05}
+          onChange={ui.setDefaultGuideOpacity}
+        />
+        <GuideGlobalSlider
+          label="Grosor línea"
+          value={ui.guideStrokeMultiplier}
+          min={0.5} max={3} step={0.1}
+          onChange={ui.setGuideStrokeMultiplier}
+        />
+      </div>
       <SectionTitle>Guías superpuestas</SectionTitle>
-      {GUIDES_LIST.map((g) => (
-        <button
-          key={g.id}
-          onClick={() => ui.toggleGuide(g.id)}
-          style={{
-            width: '100%', marginBottom: 4, padding: '7px 10px', textAlign: 'left', fontSize: 11,
-            background: ui.activeGuides.includes(g.id) ? `${BRAND.blue}30` : '#14141E',
-            border: `1px solid ${ui.activeGuides.includes(g.id) ? BRAND.blue : BRAND.cream + '15'}`,
-            borderRadius: 6, color: BRAND.cream, cursor: 'pointer',
-          }}
-        >
-          <div style={{ fontWeight: 600 }}>{g.label}</div>
-          {g.description && <div style={{ opacity: 0.5, fontSize: 9.5, marginTop: 2 }}>{g.description}</div>}
-        </button>
-      ))}
+      {GUIDES_LIST.map((g) => {
+        const active = ui.activeGuides.includes(g.id);
+        const perGuideOp = ui.guideOpacity[g.id] ?? ui.defaultGuideOpacity;
+        return (
+          <div key={g.id} style={{ marginBottom: 4 }}>
+            <button
+              onClick={() => ui.toggleGuide(g.id)}
+              style={{
+                width: '100%', padding: '7px 10px', textAlign: 'left', fontSize: 11,
+                background: active ? `${BRAND.blue}30` : '#14141E',
+                border: `1px solid ${active ? BRAND.blue : BRAND.cream + '15'}`,
+                borderRadius: active ? '6px 6px 0 0' : 6,
+                color: BRAND.cream, cursor: 'pointer',
+              }}
+            >
+              <div style={{ fontWeight: 600 }}>{g.label}</div>
+              {g.description && <div style={{ opacity: 0.5, fontSize: 9.5, marginTop: 2 }}>{g.description}</div>}
+            </button>
+            {active && (
+              <div style={{
+                padding: '6px 10px 8px',
+                background: '#0A0A14',
+                border: `1px solid ${BRAND.blue}`,
+                borderTop: 'none',
+                borderRadius: '0 0 6px 6px',
+              }}>
+                <GuideGlobalSlider
+                  label="Transparencia"
+                  value={perGuideOp}
+                  min={0.05} max={1} step={0.05}
+                  onChange={(v) => ui.setGuideOpacity(g.id, v)}
+                />
+              </div>
+            )}
+          </div>
+        );
+      })}
     </>
+  );
+}
+
+function GuideGlobalSlider({ label, value, min, max, step, onChange }: {
+  label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+      <span style={{ fontSize: 9.5, opacity: 0.55, width: 78, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</span>
+      <input
+        type="range" min={min} max={max} step={step} value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        style={{ flex: 1 }}
+      />
+      <span style={{ fontSize: 10, fontFamily: 'monospace', width: 36, textAlign: 'right', opacity: 0.8 }}>
+        {value.toFixed(2)}
+      </span>
+    </div>
   );
 }
 
