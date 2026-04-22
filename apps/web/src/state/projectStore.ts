@@ -114,49 +114,6 @@ function cloneContent(c: PositionedBlock['content']): PositionedBlock['content']
   return { ...c };
 }
 
-/**
- * Combina el contenido destino con SÓLO los campos de estilo/efectos del
- * source. Preserva texto, src de imagen, forma y otros datos del destino.
- */
-function replicateContentStyle(
-  dest: PositionedBlock['content'],
-  source: PositionedBlock['content'],
-): PositionedBlock['content'] {
-  if (dest.kind === 'text' && source.kind === 'text') {
-    return {
-      ...dest,
-      fontRole: source.fontRole,
-      fontSize: source.fontSize,
-      fontWeight: source.fontWeight,
-      fontStyle: source.fontStyle,
-      letterSpacing: source.letterSpacing,
-      lineHeight: source.lineHeight,
-      textAlign: source.textAlign,
-      color: source.color,
-      upper: source.upper,
-    };
-  }
-  if (dest.kind === 'image' && (source.kind === 'image' || source.kind === 'decor')) {
-    return {
-      ...dest,
-      fit: source.kind === 'image' ? source.fit : dest.fit,
-      effects: source.effects ? source.effects.map((e) => ({ ...e })) : undefined,
-    };
-  }
-  if (dest.kind === 'decor' && (source.kind === 'decor' || source.kind === 'image')) {
-    return {
-      ...dest,
-      overlay: source.kind === 'decor' ? source.overlay : dest.overlay,
-      density: source.kind === 'decor' ? (source.density ?? dest.density) : dest.density,
-      effects: source.effects ? source.effects.map((e) => ({ ...e })) : undefined,
-    };
-  }
-  if (dest.kind === 'shape' && source.kind === 'shape') {
-    return { ...dest, fill: source.fill, stroke: source.stroke, strokeWidth: source.strokeWidth, opacity: source.opacity };
-  }
-  return dest;
-}
-
 function buildSlide(
   type: SlideType,
   templateId: string,
