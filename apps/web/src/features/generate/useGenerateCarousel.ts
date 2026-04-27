@@ -1,18 +1,32 @@
 /**
- * Hook que resuelve el provider activo, llama a `generate()`, aplica las
- * slides generadas al proyecto inicializando bloques con la plantilla actual.
+ * Hook que orquesta la generación. Pipeline anti-desvío en 4 etapas:
+ *
+ *   1. provider.generate(topic) → slides candidatas (puede tirar)
+ *   2. planValidation → separa OK vs slots a reparar (contrato + anclaje al topic)
+ *   3. si hay rotos: callRepair + mergeRepair (un intento)
+ *   4. si todavía rotos: deterministicFallback (relleno local derivado del topic)
+ *
+ * Esto garantiza que el resultado final SIEMPRE tenga 6 slides bien formadas
+ * y al menos cover+observation hablando del tema. Modelos chicos pueden seguir
+ * desviándose, pero no rompen la UI ni dejan slides en blanco.
  */
 import { useCallback, useState } from 'react';
 import type { EditableSlide, SlideType, TemplateId } from '@/domain';
 import { nanoid } from 'nanoid';
 import { FORMATS } from '@/formats';
 import { findTemplate } from '@/templates';
-import { getProvider } from '@/services/llm';
+import {
+  getProvider,
+  planValidation,
+  callRepair,
+  mergeRepair,
+  deterministicFallback,
+} from '@/services/llm';
 import { useProjectStore } from '@/state/projectStore';
 import { useAssetsStore } from '@/state/assetsStore';
 import { useProviderStore } from '@/state/providerStore';
 import { placeholderForType } from '@/templates/init-helpers';
-import type { GeneratedSlide } from '@carrousel/shared';
+import { DEFAULT_SLIDE_ORDER, type GeneratedSlide } from '@carrousel/shared';
 
 interface UseGenerateResult {
   loading: boolean;
@@ -20,6 +34,8 @@ interface UseGenerateResult {
   generate: (topic: string, templateId?: string) => Promise<void>;
   cancel: () => void;
 }
+
+const LANGUAGE: 'es' | 'en' = 'es';
 
 export function useGenerateCarousel(): UseGenerateResult {
   const [loading, setLoading] = useState(false);
@@ -48,21 +64,65 @@ export function useGenerateCarousel(): UseGenerateResult {
     const ctrl = new AbortController();
     setAbortCtrl(ctrl);
     try {
-      const generated = await provider.generate(
-        { topic, count: 6, language: 'es', signal: ctrl.signal },
-        config,
-      );
-      // Defensa final: garantizamos que slide 1 (cover) tenga un title no
-      // vacío, aunque el LLM haya fallado en devolver line1 decente.
-      // Usamos el topic como fallback — mejor que una portada en blanco.
-      const safeGenerated = ensureCoverTitle(generated, topic);
+      const input = { topic, count: DEFAULT_SLIDE_ORDER.length, language: LANGUAGE, signal: ctrl.signal };
+      const candidates = await provider.generate(input, config);
+
+      // Etapa 2: validar contrato + anclaje al topic.
+      let plan = planValidation(candidates, topic, LANGUAGE);
+
+      // Etapa 3: reparar selectivamente lo que falló.
+      let merged: GeneratedSlide[] = [];
+      let stillBroken: SlideType[] = plan.repair.map((s) => s.type);
+      if (plan.repair.length === 0) {
+        merged = plan.ok.map((s) => stripSlot(s));
+        stillBroken = [];
+      } else {
+        try {
+          const repaired = await callRepair(provider, providerId, config, input, plan.repair);
+          const result = mergeRepair(plan, repaired, topic, LANGUAGE);
+          merged = result.slides;
+          stillBroken = result.stillBroken;
+        } catch {
+          // Si la reparación falla (red, rate limit, etc.), seguimos con
+          // lo que tenemos válido + fallback.
+          merged = plan.ok.map((s) => stripSlot(s));
+          stillBroken = plan.repair.map((s) => s.type);
+        }
+      }
+
+      // Etapa 4: rellenar lo que sigue roto con fallback determinístico.
+      if (stillBroken.length > 0) {
+        const finalSlides: GeneratedSlide[] = [];
+        // Reconstruimos por slot, en orden DEFAULT_SLIDE_ORDER. `merged` ya
+        // está ordenado por slot pero puede tener huecos — usamos el plan
+        // reordenado para detectar cuál falta.
+        const okBySlot = new Map<number, GeneratedSlide>();
+        plan.ok.forEach((s) => okBySlot.set(s.slot, stripSlot(s)));
+        // Slides que quedaron tras mergeRepair, mapeadas por type+orden:
+        const replan = planValidation(merged, topic, LANGUAGE);
+        replan.ok.forEach((s) => okBySlot.set(s.slot, stripSlot(s)));
+        for (let slot = 0; slot < DEFAULT_SLIDE_ORDER.length; slot++) {
+          const existing = okBySlot.get(slot);
+          if (existing) {
+            finalSlides.push(existing);
+          } else {
+            finalSlides.push(deterministicFallback(DEFAULT_SLIDE_ORDER[slot]!, topic, LANGUAGE));
+          }
+        }
+        merged = finalSlides;
+      }
+
+      // Defensa final adicional: por más que el contrato esté pasado,
+      // si por algún edge case la cover quedó sin line1, usamos el topic.
+      const safeGenerated = ensureCoverTitle(merged, topic);
       projectStore.setTopic(topic);
+
       // Si el usuario ya tiene slides armadas, SOLO actualizamos los textos —
       // preservando fondo, decors, shapes, efectos, posiciones y z-order.
       // Si no hay slides (primera generación), creamos desde plantilla.
       if (projectStore.slides.length > 0) {
-        const merged = projectStore.mergeGeneratedTexts(safeGenerated);
-        if (merged) return;
+        const mergedOk = projectStore.mergeGeneratedTexts(safeGenerated);
+        if (mergedOk) return;
       }
       const templateId = overrideTemplateId ?? projectStore.slides[0]?.templateId ?? 'tiled';
       const templateAssets = {
@@ -81,6 +141,12 @@ export function useGenerateCarousel(): UseGenerateResult {
   }, [providerStore, projectStore, assetsStore]);
 
   return { loading, error, generate, cancel };
+}
+
+function stripSlot(s: GeneratedSlide & { slot?: number }): GeneratedSlide {
+  const { slot: _slot, ...rest } = s as GeneratedSlide & { slot?: number };
+  void _slot;
+  return rest;
 }
 
 /**

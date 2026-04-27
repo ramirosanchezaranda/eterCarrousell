@@ -6,7 +6,7 @@
  * Resp: { slides: GeneratedSlide[] }
  */
 import { GenerateRequestSchema, GeneratedSlideSchema } from '@carrousel/shared';
-import { buildPrompt } from '../lib/prompt';
+import { buildSystem, buildUser } from '../lib/prompt';
 import { checkRateLimit } from '../lib/rateLimit';
 
 export const config = { runtime: 'edge' };
@@ -33,7 +33,9 @@ export default async function handler(req: Request): Promise<Response> {
   const key = (globalThis as any).process?.env?.ANTHROPIC_API_KEY;
   if (!key) return json({ error: 'Server not configured' }, 500);
 
-  const prompt = buildPrompt(topic, count, language);
+  const system = buildSystem(language);
+  const user = buildUser(topic, count, language);
+
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -44,22 +46,21 @@ export default async function handler(req: Request): Promise<Response> {
     body: JSON.stringify({
       model: 'claude-sonnet-4-5',
       max_tokens: 2000,
-      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.4,
+      system,
+      messages: [{ role: 'user', content: user }],
     }),
   });
   if (!resp.ok) return json({ error: `Anthropic ${resp.status}` }, 502);
   const data = await resp.json() as any;
-  let text = (data.content ?? [])
+  const text = (data.content ?? [])
     .filter((b: any) => b.type === 'text')
     .map((b: any) => b.text)
-    .join('')
-    .replace(/```json|```/g, '')
-    .trim();
-  const start = text.indexOf('[');
-  const end = text.lastIndexOf(']');
-  if (start !== -1 && end !== -1) text = text.slice(start, end + 1);
+    .join('');
+
+  const arrayJson = extractSlidesJson(text);
   let parsedSlides: unknown;
-  try { parsedSlides = JSON.parse(text); } catch { return json({ error: 'Could not parse response' }, 502); }
+  try { parsedSlides = JSON.parse(arrayJson); } catch { return json({ error: 'Could not parse response' }, 502); }
   if (!Array.isArray(parsedSlides)) return json({ error: 'Response is not an array' }, 502);
   const slides = parsedSlides.map((s) => GeneratedSlideSchema.safeParse(s)).filter((r) => r.success).map((r) => (r as any).data);
   if (slides.length === 0) return json({ error: 'No valid slides' }, 502);
@@ -68,6 +69,29 @@ export default async function handler(req: Request): Promise<Response> {
     200,
     { 'X-RateLimit-Remaining': String(rl.remaining), 'X-RateLimit-Reset': String(rl.resetAt) },
   );
+}
+
+/**
+ * Extrae el array de slides desde la respuesta del LLM. Acepta:
+ *   - {"slides":[...]} (forma canónica del nuevo prompt)
+ *   - [...] (legacy)
+ *   - texto envuelto en fences ```json
+ *   - basura antes/después.
+ */
+function extractSlidesJson(raw: string): string {
+  const cleaned = raw.replace(/```json|```/g, '').trim();
+  // Si arranca con `{` (objeto), intentamos parsear y descender por keys conocidas.
+  if (cleaned.startsWith('{')) {
+    try {
+      const obj = JSON.parse(cleaned);
+      const candidate = obj?.slides ?? obj?.data ?? obj?.result ?? obj?.carousel;
+      if (Array.isArray(candidate)) return JSON.stringify(candidate);
+    } catch { /* cae al fallback abajo */ }
+  }
+  const start = cleaned.indexOf('[');
+  const end = cleaned.lastIndexOf(']');
+  if (start === -1 || end === -1) return cleaned;
+  return cleaned.slice(start, end + 1);
 }
 
 function json(body: unknown, status = 200, extra: Record<string, string> = {}): Response {
