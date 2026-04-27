@@ -12,21 +12,35 @@ export function seededRandom(seed: number): () => number {
   };
 }
 
-/** Corta texto en líneas respetando un máximo de caracteres por línea. */
+/** Corta texto en líneas respetando un máximo de caracteres por línea.
+ *
+ * Trata los `\n` del input como SALTOS DE LÍNEA DUROS (lo que escribió el
+ * usuario manualmente) y además wrapea por ancho cada segmento si supera
+ * `maxChars`. Antes esto era un solo `split(' ')` plano: si el usuario
+ * insertaba un `\n`, todo el texto después del `\n` se metía en una sola
+ * "palabra" gigante y la línea explotaba el bbox.
+ */
 export function wrapText(text: string, maxChars: number): string[] {
-  const words = text.split(' ');
-  const lines: string[] = [];
-  let current = '';
-  for (const w of words) {
-    if ((current + ' ' + w).trim().length > maxChars) {
-      if (current) lines.push(current.trim());
-      current = w;
-    } else {
-      current = (current + ' ' + w).trim();
+  const result: string[] = [];
+  const paragraphs = text.split('\n');
+  for (const para of paragraphs) {
+    if (para.length === 0) {
+      result.push(''); // párrafo vacío = línea en blanco intencional
+      continue;
     }
+    const words = para.split(' ');
+    let current = '';
+    for (const w of words) {
+      if ((current + ' ' + w).trim().length > maxChars) {
+        if (current) result.push(current.trim());
+        current = w;
+      } else {
+        current = (current + ' ' + w).trim();
+      }
+    }
+    if (current) result.push(current);
   }
-  if (current) lines.push(current);
-  return lines;
+  return result;
 }
 
 /**
@@ -63,13 +77,26 @@ export function wrapTextWithRanges(text: string, maxChars: number): WrappedLine[
     }
   };
   while (i < n) {
+    // Salto de línea duro: cierra la línea actual y arranca otra.
+    // Conservamos los rangos para que distributeRunsByRanges no pierda chars.
+    if (text[i] === '\n') {
+      if (currentLen > 0) {
+        flush(currentEnd);
+      } else {
+        // Línea en blanco intencional: empuja una línea vacía con rango cero.
+        lines.push({ text: '', start: i, end: i });
+      }
+      i++;
+      lineStart = i;
+      continue;
+    }
     // Saltear espacios al inicio de línea y mover lineStart
     if (currentLen === 0) {
       while (i < n && text[i] === ' ') { i++; lineStart = i; }
     }
-    // Leer la próxima palabra
+    // Leer la próxima palabra (frena en espacio o \n)
     const wordStart = i;
-    while (i < n && text[i] !== ' ') i++;
+    while (i < n && text[i] !== ' ' && text[i] !== '\n') i++;
     const word = text.slice(wordStart, i);
     if (!word) continue;
     const sep = currentLen > 0 ? 1 : 0; // espacio antes de la palabra

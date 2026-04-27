@@ -192,12 +192,16 @@ function renderText(block: PositionedBlock, _theme: BrandTheme, fonts: ResolvedF
     : c.text;
   const displayText = c.upper ? flatText.toUpperCase() : flatText;
   const lineHeightRatio = c.lineHeight ?? 1.15;
-  // Auto-fit: si no hay \n manuales y el texto es "largo-ish", calculamos
-  // wrap por ancho y achicamos fontSize si hace falta para caber en rect.h.
-  // Para títulos cortos (<= 30 chars) dejamos el render legacy (sin wrap,
-  // sin shrink) — así no cambia la apariencia de cover/quote/CTA cortas.
+  // Auto-fit: para texto "largo-ish" calculamos wrap por ancho y achicamos
+  // fontSize si hace falta para caber en rect.h.
+  // Para títulos cortos (<= 30 chars) y sin \n dejamos el render legacy
+  // (sin wrap, sin shrink) — así no cambia la apariencia de cover/quote/CTA
+  // cortas. Cuando el usuario inserta \n manuales en un párrafo largo
+  // (caso típico: "primera frase.\nsegunda frase larga"), wrapText los
+  // respeta como hard breaks Y además wrappea cada segmento por ancho —
+  // antes el segmento post-\n quedaba en una sola línea SVG infinita.
   const manualLineBreaks = displayText.includes('\n');
-  const shouldAutoFit = !manualLineBreaks && displayText.length > 30;
+  const shouldAutoFit = displayText.length > 30 || manualLineBreaks;
   // Auto-fit plano (para `c.text` sin runs): wrap + shrink.
   const autoFit = shouldAutoFit && !useRuns
     ? fitTextToRect(displayText, block.rect, c.fontSize, lineHeightRatio, c.letterSpacing ?? 0)
