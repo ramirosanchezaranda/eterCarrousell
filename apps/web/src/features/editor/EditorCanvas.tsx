@@ -24,6 +24,13 @@ import { PathNodeEditor } from './PathNodeEditor';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { InlineTextEditor } from './InlineTextEditor';
 import { BlockFloatingToolbar } from './BlockFloatingToolbar';
+import { SmartGuidesOverlay } from './SmartGuidesOverlay';
+import {
+  buildTargets,
+  computeSmartGuides,
+  movableEdgesForHandle,
+  type SmartGuidesResult,
+} from './smartGuides';
 
 interface DragState {
   blockId: string;
@@ -35,6 +42,9 @@ interface DragState {
   /** Patch aplicado localmente durante el drag (no toca el store). */
   currentRect: Rect;
   currentRotation: number;
+  /** Para multi-select move: bloques adicionales arrastrados con el primario.
+   *  No aplicable a resize/rotate (en Canva tampoco se multi-resizea). */
+  additionalBlocks?: Array<{ id: string; startRect: Rect; currentRect: Rect }>;
 }
 
 export function EditorCanvas() {
@@ -47,6 +57,7 @@ export function EditorCanvas() {
   const format: SlideFormat = FORMATS[formatId];
   const slide = slides.find((s) => s.id === currentSlideId) ?? slides[0];
   const [drag, setDrag] = useState<DragState | null>(null);
+  const [smartGuides, setSmartGuides] = useState<SmartGuidesResult | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; blockId?: string; canvasX?: number; canvasY?: number } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   // Medimos el WRAPPER PADRE (no el canvas mismo) para calcular cuánto
@@ -218,7 +229,24 @@ export function EditorCanvas() {
     e.stopPropagation();
     if (block.locked) { ui.selectBlock(block.id, e.shiftKey); return; }
     (e.target as Element).setPointerCapture(e.pointerId);
-    ui.selectBlock(block.id, e.shiftKey);
+
+    // Multi-drag: si el bloque ya estaba en una selección múltiple, NO la
+    // alteramos y arrastramos todos juntos. Si no, seleccionamos el bloque
+    // (con shift suma a la selección) y arrastramos solo este.
+    const inMultiSelection =
+      ui.selectedBlockIds.includes(block.id) && ui.selectedBlockIds.length > 1;
+    let extraIds: string[] = [];
+    if (inMultiSelection) {
+      // Mantener la selección actual
+      extraIds = ui.selectedBlockIds.filter((id) => id !== block.id);
+    } else {
+      ui.selectBlock(block.id, e.shiftKey);
+    }
+    const additional = extraIds
+      .map((id) => slide?.blocks.find((b) => b.id === id))
+      .filter((b): b is PositionedBlock => !!b && !b.locked)
+      .map((b) => ({ id: b.id, startRect: { ...b.rect }, currentRect: { ...b.rect } }));
+
     setDrag({
       blockId: block.id,
       mode: 'move',
@@ -227,6 +255,7 @@ export function EditorCanvas() {
       startRotation: block.rotation ?? 0,
       currentRect: { ...block.rect },
       currentRotation: block.rotation ?? 0,
+      additionalBlocks: additional.length > 0 ? additional : undefined,
     });
   };
 
@@ -280,36 +309,138 @@ export function EditorCanvas() {
     // Drag local: solo actualiza state del componente. No toca el store.
     // El render lee `drag.currentRect/currentRotation` para el bloque activo.
     if (drag.mode === 'move') {
+      // 1. Posición tentativa con el delta del puntero.
       let nx = drag.startRect.x + dx;
       let ny = drag.startRect.y + dy;
+
+      // 2. Smart guides: alineación a otros bloques + canvas + safe margins.
+      //    Computamos sobre el AABB UNIÓN si hay multi-select (Canva trata
+      //    el grupo como una sola caja para alinear).
+      const draggedIds = drag.additionalBlocks
+        ? [drag.blockId, ...drag.additionalBlocks.map((a) => a.id)]
+        : [drag.blockId];
+      const tentativeRects = computeMoveRects(drag, nx - drag.startRect.x, ny - drag.startRect.y);
+      const unionRect = unionAabb(tentativeRects.map((r) => r.rect));
+      const targets = ui.smartGuidesEnabled
+        ? buildTargets(slide.blocks, draggedIds, format)
+        : [];
+      const sg = ui.smartGuidesEnabled
+        ? computeSmartGuides({
+            dragRect: unionRect,
+            dragRotation: 0, // unión ya es AABB
+            targets,
+            threshold: ui.snapThresholdPx,
+          })
+        : null;
+
+      // 3. Aplicar snap delta de smart guides al delta total.
+      if (sg && (sg.snap.dx !== 0 || sg.snap.dy !== 0)) {
+        nx += sg.snap.dx;
+        ny += sg.snap.dy;
+      }
+
+      // 4. Snap a guías composicionales (rule-of-thirds, etc.) si están activos.
+      //    Aplicado DESPUÉS del smart-snap; gana el más cercano.
       if (ui.snapEnabled && ui.activeGuides.length > 0) {
         const snap = findNearestSnap({ x: nx, y: ny }, ui.activeGuides, format, ui.snapThresholdPx);
         if (snap) { nx = snap.x; ny = snap.y; }
       }
-      setDrag({ ...drag, currentRect: { ...drag.startRect, x: nx, y: ny } });
+
+      // 5. Re-computar smart guides post-snap final para que las líneas
+      //    se rendericen exactamente sobre el rect final.
+      const finalDelta = { dx: nx - drag.startRect.x, dy: ny - drag.startRect.y };
+      const finalRects = computeMoveRects(drag, finalDelta.dx, finalDelta.dy);
+      const finalUnion = unionAabb(finalRects.map((r) => r.rect));
+      const finalSg = ui.smartGuidesEnabled
+        ? computeSmartGuides({
+            dragRect: finalUnion,
+            dragRotation: 0,
+            targets,
+            threshold: ui.snapThresholdPx,
+            applySnap: false,
+          })
+        : null;
+      setSmartGuides(finalSg);
+
+      // 6. Aplicar a primary + additional.
+      const newAdditional = drag.additionalBlocks?.map((a) => ({
+        ...a,
+        currentRect: { ...a.startRect, x: a.startRect.x + finalDelta.dx, y: a.startRect.y + finalDelta.dy },
+      }));
+      setDrag({
+        ...drag,
+        currentRect: { ...drag.startRect, x: nx, y: ny },
+        additionalBlocks: newAdditional,
+      });
     } else if (drag.mode === 'resize') {
-      const rect = resolveResize(drag.startRect, drag.handle!, dx, dy);
+      let rect = resolveResize(drag.startRect, drag.handle!, dx, dy);
+
+      // Smart guides en resize: solo snap a los edges que efectivamente
+      // estén moviéndose (left para 'w', right para 'e', etc.).
+      if (ui.smartGuidesEnabled) {
+        const targets = buildTargets(slide.blocks, [drag.blockId], format);
+        const sg = computeSmartGuides({
+          dragRect: rect,
+          dragRotation: drag.startRotation,
+          targets,
+          threshold: ui.snapThresholdPx,
+          movableEdges: movableEdgesForHandle(drag.handle ?? ''),
+          // Equal gaps no aplican durante resize (cambia tamaño, no posición).
+          computeEqualGaps: false,
+        });
+        // Aplicamos el delta al edge correspondiente (no al rect completo).
+        rect = applyResizeSnap(rect, drag.handle!, sg.snap);
+        const finalSg = computeSmartGuides({
+          dragRect: rect,
+          dragRotation: drag.startRotation,
+          targets,
+          threshold: ui.snapThresholdPx,
+          movableEdges: movableEdgesForHandle(drag.handle ?? ''),
+          computeEqualGaps: false,
+          applySnap: false,
+        });
+        setSmartGuides(finalSg);
+      }
+
       setDrag({ ...drag, currentRect: rect });
     } else if (drag.mode === 'rotate') {
       const cx = drag.startRect.x + drag.startRect.w / 2;
       const cy = drag.startRect.y + drag.startRect.h / 2;
       const angle = Math.atan2(p.y - cy, p.x - cx) * (180 / Math.PI) + 90;
       setDrag({ ...drag, currentRotation: Math.round(angle) });
+      setSmartGuides(null);
     }
   };
 
   const onPointerUp = () => {
-    if (!drag || !slide) { setDrag(null); return; }
+    if (!drag || !slide) { setDrag(null); setSmartGuides(null); return; }
     // Commit del drag al store solo al soltar. Un único set → un único
     // snapshot en zundo y una sola escritura a localStorage.
     const patch = drag.mode === 'rotate'
       ? { rotation: drag.currentRotation }
       : { rect: drag.currentRect };
     projectStore.updateBlock(slide.id, drag.blockId, patch);
-    // Evaluación de auto-fix sobre el estado FUTURO (con el patch aplicado).
-    const nextBlocks = slide.blocks.map((b) => b.id === drag.blockId
-      ? { ...b, ...(drag.mode === 'rotate' ? { rotation: drag.currentRotation } : { rect: drag.currentRect }) }
-      : b);
+    // En multi-drag, también commiteamos los bloques adicionales.
+    if (drag.mode === 'move' && drag.additionalBlocks) {
+      for (const a of drag.additionalBlocks) {
+        projectStore.updateBlock(slide.id, a.id, { rect: a.currentRect });
+      }
+    }
+    // Evaluación de auto-fix sobre el estado FUTURO (con todos los patches).
+    const additionalById = new Map(
+      (drag.additionalBlocks ?? []).map((a) => [a.id, a.currentRect]),
+    );
+    const nextBlocks = slide.blocks.map((b) => {
+      if (b.id === drag.blockId) {
+        return {
+          ...b,
+          ...(drag.mode === 'rotate' ? { rotation: drag.currentRotation } : { rect: drag.currentRect }),
+        };
+      }
+      const moved = additionalById.get(b.id);
+      if (moved) return { ...b, rect: moved };
+      return b;
+    });
     const result = solveLayout(nextBlocks, format, {
       backgroundColor: assets.theme.colors.bg,
       autoFix: ui.autoFixEnabled,
@@ -320,6 +451,7 @@ export function EditorCanvas() {
     }
     ui.setWarnings(result.warnings);
     setDrag(null);
+    setSmartGuides(null);
   };
 
   const onBackgroundDown = (e: ReactPointerEvent<SVGSVGElement>) => {
@@ -452,10 +584,16 @@ export function EditorCanvas() {
           .slice()
           .sort((a, b) => a.zIndex - b.zIndex)
           .map((block) => {
-            // Aplica el patch local del drag solo al bloque que se está moviendo.
-            const live = drag && drag.blockId === block.id
-              ? { ...block, rect: drag.currentRect, rotation: drag.currentRotation }
-              : block;
+            // Aplica el patch local del drag al primario y a los adicionales (multi-select).
+            let live = block as PositionedBlock;
+            if (drag) {
+              if (drag.blockId === block.id) {
+                live = { ...block, rect: drag.currentRect, rotation: drag.currentRotation };
+              } else if (drag.additionalBlocks) {
+                const a = drag.additionalBlocks.find((x) => x.id === block.id);
+                if (a) live = { ...block, rect: a.currentRect };
+              }
+            }
             return (
               <g
                 key={block.id}
@@ -471,14 +609,30 @@ export function EditorCanvas() {
         {ui.activeGuides.length > 0 && (
           <GuidesOverlay format={format} activeGuideIds={ui.activeGuides} color={assets.theme.colors.primary} />
         )}
+        {/* Smart guides estilo Canva: solo durante drag/resize activo. */}
+        {smartGuides && (smartGuides.guides.length > 0 || smartGuides.distances.length > 0 || smartGuides.equalGaps.length > 0) && (
+          <SmartGuidesOverlay
+            guides={smartGuides.guides}
+            distances={smartGuides.distances}
+            equalGaps={smartGuides.equalGaps}
+            scale={scale}
+          />
+        )}
         {ui.selectedBlockIds.map((id) => {
           const b = slide.blocks.find((bl) => bl.id === id);
           if (!b) return null;
           // Cuando un path está en edición de nodos, no mostramos los handles
           // de rect (serían confusos); mostramos solo los puntos.
           if (ui.pathEditingBlockId === b.id && b.content.kind === 'path') return null;
-          // Handles siguen el rect en vivo durante el drag.
-          const liveRect = drag && drag.blockId === b.id ? drag.currentRect : b.rect;
+          // Handles siguen el rect en vivo durante el drag (primary + additionals).
+          let liveRect = b.rect;
+          if (drag) {
+            if (drag.blockId === b.id) liveRect = drag.currentRect;
+            else {
+              const add = drag.additionalBlocks?.find((a) => a.id === b.id);
+              if (add) liveRect = add.currentRect;
+            }
+          }
           return (
             <SelectionHandles
               key={id}
@@ -579,6 +733,57 @@ function resolveResize(start: Rect, handle: HandlePosition, dx: number, dy: numb
   if (handle.includes('w')) { const nw = Math.max(20, start.w - dx); x = start.x + (start.w - nw); w = nw; }
   if (handle.includes('n')) { const nh = Math.max(20, start.h - dy); y = start.y + (start.h - nh); h = nh; }
   return { x, y, w, h };
+}
+
+/**
+ * Aplica el snap de smart guides a un rect en resize. El snap viene como
+ * un delta global (dx, dy) pero solo aplica al edge que se está moviendo.
+ * Ej: handle 'e' → mueve el right edge → ajusta `w` por dx; ignora dy.
+ */
+function applyResizeSnap(rect: Rect, handle: HandlePosition, snap: { dx: number; dy: number }): Rect {
+  let { x, y, w, h } = rect;
+  if (handle.includes('e')) w = Math.max(20, w + snap.dx);
+  if (handle.includes('w')) { const nw = Math.max(20, w - snap.dx); x = x + (w - nw); w = nw; }
+  if (handle.includes('s')) h = Math.max(20, h + snap.dy);
+  if (handle.includes('n')) { const nh = Math.max(20, h - snap.dy); y = y + (h - nh); h = nh; }
+  return { x, y, w, h };
+}
+
+/**
+ * Calcula los rects tentativos de todos los bloques arrastrados (primary
+ * + additionals) aplicando el delta. Útil para construir el AABB unión.
+ */
+function computeMoveRects(
+  drag: DragState,
+  dx: number,
+  dy: number,
+): Array<{ id: string; rect: Rect }> {
+  const out: Array<{ id: string; rect: Rect }> = [
+    {
+      id: drag.blockId,
+      rect: { ...drag.startRect, x: drag.startRect.x + dx, y: drag.startRect.y + dy },
+    },
+  ];
+  for (const a of drag.additionalBlocks ?? []) {
+    out.push({
+      id: a.id,
+      rect: { ...a.startRect, x: a.startRect.x + dx, y: a.startRect.y + dy },
+    });
+  }
+  return out;
+}
+
+/** AABB unión de varios rects. */
+function unionAabb(rects: ReadonlyArray<Rect>): Rect {
+  if (rects.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const r of rects) {
+    if (r.x < minX) minX = r.x;
+    if (r.y < minY) minY = r.y;
+    if (r.x + r.w > maxX) maxX = r.x + r.w;
+    if (r.y + r.h > maxY) maxY = r.y + r.h;
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
 function fileToDataURI(file: File): Promise<string> {

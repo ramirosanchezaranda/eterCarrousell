@@ -17,6 +17,9 @@ export interface UiState {
   activeGuides: GuideId[];
   snapEnabled: boolean;
   snapThresholdPx: number;
+  /** Smart guides estilo Canva: alineación a otros bloques, distancias en
+   *  px, equal-gap markers. Activo por default; toggle desde el menú "Ver". */
+  smartGuidesEnabled: boolean;
   showBoundingBoxes: boolean;
   gridVisible: boolean;
   zoom: number;
@@ -76,6 +79,7 @@ export interface UiActions {
   clearSelection: () => void;
   toggleGuide: (id: GuideId) => void;
   setSnapEnabled: (v: boolean) => void;
+  setSmartGuidesEnabled: (v: boolean) => void;
   setZoom: (z: number) => void;
   setLoading: (v: boolean) => void;
   setDownloading: (v: boolean) => void;
@@ -108,6 +112,7 @@ export const useUiStore = create<UiState & UiActions>((set, get) => ({
   activeGuides: [],
   snapEnabled: true,
   snapThresholdPx: 8,
+  smartGuidesEnabled: true,
   showBoundingBoxes: true,
   gridVisible: false,
   zoom: 1,
@@ -140,6 +145,7 @@ export const useUiStore = create<UiState & UiActions>((set, get) => ({
     activeGuides: s.activeGuides.includes(id) ? s.activeGuides.filter((g) => g !== id) : [...s.activeGuides, id],
   })),
   setSnapEnabled: (snapEnabled) => set({ snapEnabled }),
+  setSmartGuidesEnabled: (smartGuidesEnabled) => set({ smartGuidesEnabled }),
   setZoom: (zoom) => set({ zoom }),
   setLoading: (loading) => set({ loading }),
   setDownloading: (downloading) => set({ downloading }),
