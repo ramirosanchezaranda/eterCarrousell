@@ -9,7 +9,8 @@
     "build": "pnpm --filter @carrousel/web build",
     "build:bff": "pnpm --filter @carrousel/bff build",
     "preview": "pnpm --filter @carrousel/web preview",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r --if-present test"
   },
   "packageManager": "pnpm@9.12.2",
   "engines": {

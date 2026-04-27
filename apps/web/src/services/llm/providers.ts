@@ -40,6 +40,7 @@ export const PROVIDERS: Record<ProviderId, LlmProvider> = {
       endpoint: config.endpoint ?? 'https://api.groq.com/openai/v1',
       model: config.model ?? 'llama-3.3-70b-versatile',
       apiKey: config.apiKey,
+      supportsJsonMode: true,
     }),
   },
   openai: {
@@ -54,6 +55,7 @@ export const PROVIDERS: Record<ProviderId, LlmProvider> = {
       endpoint: config.endpoint ?? 'https://api.openai.com/v1',
       model: config.model ?? 'gpt-4o-mini',
       apiKey: config.apiKey,
+      supportsJsonMode: true,
     }),
   },
   gemini: {
@@ -77,6 +79,7 @@ export const PROVIDERS: Record<ProviderId, LlmProvider> = {
       endpoint: config.endpoint ?? 'https://api.mistral.ai/v1',
       model: config.model ?? 'mistral-small-latest',
       apiKey: config.apiKey,
+      supportsJsonMode: true,
     }),
   },
   ollama: {
@@ -102,6 +105,9 @@ export const PROVIDERS: Record<ProviderId, LlmProvider> = {
       model: config.model ?? 'local-model',
       apiKey: config.apiKey ?? 'lm-studio',
       requireAuth: false,
+      // LM Studio normalmente acepta json_object; si el modelo cargado no
+      // lo soporta, simplemente lo ignora.
+      supportsJsonMode: true,
     }),
   },
 };

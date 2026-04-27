@@ -4,14 +4,18 @@
  *   - `anthropic-direct`: llama al endpoint de Anthropic desde el browser
  *     con la key del usuario. Requiere header `anthropic-dangerous-direct-browser-access`
  *     (Anthropic lo soporta explícitamente desde 2024). La key queda en localStorage.
+ *
+ * Para Claude usamos el campo `system` aparte (no embebido en el user message),
+ * que es la forma recomendada por Anthropic y mejora la obediencia del contrato.
  */
 import { GeneratedSlideSchema, type GeneratedSlide } from '@carrousel/shared';
-import { buildCarouselPrompt, extractJsonArray } from './prompt';
+import { buildSystemPrompt, buildUserPrompt } from './prompt';
 import { parseSlidesJson } from './openaiCompat';
+import { fetchWithRetry } from './http';
 import type { GenerateInput, ProviderConfig } from './types';
 
 export async function anthropicBffGenerate(input: GenerateInput): Promise<GeneratedSlide[]> {
-  const resp = await fetch('/api/generate', {
+  const resp = await fetchWithRetry('/api/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ topic: input.topic, count: input.count, language: input.language }),
@@ -34,9 +38,10 @@ export async function anthropicDirectGenerate(
   const apiKey = config.apiKey;
   if (!apiKey) throw new Error('API key de Anthropic requerida');
   const model = config.model ?? 'claude-sonnet-4-5';
-  const prompt = buildCarouselPrompt(input.topic, input.count, input.language);
+  const system = buildSystemPrompt(input.language);
+  const user = buildUserPrompt(input.topic, input.count, input.language);
 
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+  const resp = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -47,7 +52,9 @@ export async function anthropicDirectGenerate(
     body: JSON.stringify({
       model,
       max_tokens: 2000,
-      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.4,
+      system,
+      messages: [{ role: 'user', content: user }],
     }),
     signal: input.signal,
   });
@@ -57,5 +64,5 @@ export async function anthropicDirectGenerate(
   }
   const data = await resp.json() as { content?: Array<{ type: string; text: string }> };
   const text = (data.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('');
-  return parseSlidesJson(extractJsonArray(text));
+  return parseSlidesJson(text);
 }
